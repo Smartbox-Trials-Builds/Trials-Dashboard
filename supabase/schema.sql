@@ -52,9 +52,22 @@ create table if not exists public.gipod_codes (
   id uuid primary key default gen_random_uuid(),
   code text not null unique,
   used_on text not null default '',
+  used_date date,
   note text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+create table if not exists public.app_file_logs (
+  id uuid primary key default gen_random_uuid(),
+  file_id uuid not null references public.trial_files(id) on delete cascade,
+  actor_user_id uuid references public.app_users(id) on delete set null,
+  actor_name text not null default '',
+  action text not null,
+  field_name text not null default '',
+  old_value text not null default '',
+  new_value text not null default '',
+  created_at timestamptz not null default now()
 );
 
 create table if not exists public.app_users (
@@ -128,7 +141,7 @@ begin
 end;
 $$;
 
-create or replace function public.claim_next_gipod_code(p_file_id uuid, p_crm_number text)
+create or replace function public.claim_next_gipod_code(p_file_id uuid, p_crm_number text, p_used_date date default current_date)
 returns text
 language plpgsql
 set search_path = ''
@@ -138,6 +151,7 @@ declare
 begin
   update public.gipod_codes
   set used_on = p_crm_number,
+      used_date = p_used_date,
       note = coalesce(note, '')
   where id = (
     select id
@@ -161,6 +175,7 @@ begin
   if not found then
     update public.gipod_codes
     set used_on = '',
+        used_date = null,
         note = ''
     where code = claimed_code;
     return null;
@@ -765,6 +780,7 @@ alter table public.trial_files enable row level security;
 alter table public.gipod_codes enable row level security;
 alter table public.app_users enable row level security;
 alter table public.app_user_activity enable row level security;
+alter table public.app_file_logs enable row level security;
 alter table public.app_shipment_activity enable row level security;
 alter table public.app_eod_cleanups enable row level security;
 alter table public.coordinator_auto_queue enable row level security;
@@ -818,6 +834,18 @@ create policy "Team can delete gipod codes"
 on public.gipod_codes for delete
 to anon, authenticated
 using (true);
+
+drop policy if exists "Team can read file logs" on public.app_file_logs;
+create policy "Team can read file logs"
+on public.app_file_logs for select
+to anon, authenticated
+using (true);
+
+drop policy if exists "Team can insert file logs" on public.app_file_logs;
+create policy "Team can insert file logs"
+on public.app_file_logs for insert
+to anon, authenticated
+with check (true);
 
 drop policy if exists "Team can insert activity" on public.app_user_activity;
 create policy "Team can insert activity"
@@ -889,11 +917,12 @@ grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on public.trial_files to anon, authenticated;
 grant select, insert, update, delete on public.gipod_codes to anon, authenticated;
 revoke all on public.app_users from anon, authenticated;
+grant select, insert on public.app_file_logs to anon, authenticated;
 grant select, insert on public.app_user_activity to anon, authenticated;
 grant select, insert, delete on public.app_shipment_activity to anon, authenticated;
 grant select, insert, delete on public.app_eod_cleanups to anon, authenticated;
 grant select, insert, delete on public.coordinator_auto_queue to anon, authenticated;
-grant execute on function public.claim_next_gipod_code(uuid, text) to anon, authenticated;
+grant execute on function public.claim_next_gipod_code(uuid, text, date) to anon, authenticated;
 grant execute on function public.register_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.login_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.list_app_users(uuid) to anon, authenticated;
@@ -912,6 +941,7 @@ grant execute on function public.update_app_user_pin(uuid, uuid, text) to anon, 
 
 alter table public.trial_files replica identity full;
 alter table public.gipod_codes replica identity full;
+alter table public.app_file_logs replica identity full;
 alter table public.coordinator_auto_queue replica identity full;
 alter table public.app_shipment_activity replica identity full;
 alter table public.app_eod_cleanups replica identity full;
@@ -935,6 +965,15 @@ begin
         and tablename = 'gipod_codes'
     ) then
       alter publication supabase_realtime add table public.gipod_codes;
+    end if;
+
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'app_file_logs'
+    ) then
+      alter publication supabase_realtime add table public.app_file_logs;
     end if;
 
     if not exists (

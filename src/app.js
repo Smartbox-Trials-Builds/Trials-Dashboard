@@ -32,6 +32,8 @@ let teamActivity = [];
 let selectedProfileId = '';
 let profileUser = null;
 let profileActivity = [];
+let fileLogs = [];
+let activeFileTab = 'details';
 let view = 'dashboard';
 let prepTab = 'files';
 let codeTab = 'unused';
@@ -63,6 +65,24 @@ const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({
   "'": '&#39;',
   '"': '&quot;'
 }[char]));
+
+function formatDate(value) {
+  if (!value) return 'none';
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(date.valueOf())) return String(value);
+  return date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+}
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return String(value);
+  return `${date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+function displayValue(value) {
+  return value === null || value === undefined || value === '' ? 'none' : String(value);
+}
 
 function readRememberedUser() {
   try {
@@ -307,7 +327,7 @@ function renderShell() {
               <button id="code-tab-unused" class="tab active" data-action="code-filter" data-name="unused" type="button">Unused <span id="unusedCodeCount" class="count">0</span></button>
               <button id="code-tab-used" class="tab" data-action="code-filter" data-name="used" type="button">Used <span id="usedCodeCount" class="count">0</span></button>
             </div>
-            <table class="table"><thead><tr><th>GIPOD code</th><th>Status</th><th>CRM number used on</th><th>Note</th><th></th></tr></thead><tbody id="gipodRows"></tbody></table>
+            <table class="table"><thead><tr><th>GIPOD code</th><th>Status</th><th>CRM number used on</th><th>Used date</th><th>Note</th><th></th></tr></thead><tbody id="gipodRows"></tbody></table>
           </div>
         </section>
         <section class="card section hide" id="shippingView">
@@ -380,13 +400,14 @@ function renderShell() {
   $('codeRows').addEventListener('input', previewGipodCodes);
   $('useCodeForm').addEventListener('submit', saveManualGipodUse);
   $('editLoan').addEventListener('input', syncLaneFromLoan);
+  $('editExpires').addEventListener('input', syncLaneFromShipBy);
   $('addCameraButton').addEventListener('click', addCameraField);
   setConnection('Connecting');
 }
 
 function dialogs() {
   return `
-    <dialog id="fileModal"><form method="dialog" id="fileForm" class="section"><div class="dialog-head"><div><div class="eyebrow">Client file</div><h3 id="fileModalTitle">Edit file</h3></div><button class="icon-btn" type="button" data-action="close-dialog" aria-label="Close">x</button></div><input type="hidden" id="editId"><div class="form">
+    <dialog id="fileModal"><form method="dialog" id="fileForm" class="section"><div class="dialog-head"><div><div class="eyebrow">Client file</div><h3 id="fileModalTitle">Edit file</h3></div><button class="icon-btn" type="button" data-action="close-dialog" aria-label="Close">x</button></div><input type="hidden" id="editId"><div class="tabs file-tabs"><button id="file-tab-details" class="tab active" data-action="file-tab" data-name="details" type="button">Details</button><button id="file-tab-log" class="tab" data-action="file-tab" data-name="log" type="button">Log</button></div><div id="fileDetailsPanel" class="form">
       <div class="field"><label for="editLast">Last name</label><input id="editLast" required></div><div class="field"><label for="editFirst">First name</label><input id="editFirst" required></div>
       <div class="field"><label for="editDevice">Device</label><input id="editDevice" required></div><div class="field"><label for="editDeviceNumber">Device number</label><input id="editDeviceNumber" placeholder="Device asset number"></div>
       <div class="field"><label for="editGipod">GIPOD code</label><input id="editGipod" placeholder="GIPOD code"></div><div class="field"><label for="editCameraNumber">Camera 1</label><input id="editCameraNumber" placeholder="Camera asset number"></div>
@@ -396,7 +417,7 @@ function dialogs() {
       <div class="field"><label for="editDate">Queue date</label><input id="editDate" type="date"></div><div class="field"><label for="editExpires">Ship by date</label><input id="editExpires" type="date"></div>
       <div class="field"><label for="editStatus">Status</label><select id="editStatus"><option>Ready for Pre-Prep</option><option>Ready for Prep</option><option>Ready for QA</option><option>Complete</option><option>Shipped</option></select></div><div class="field full"><label for="editLane">Dashboard lane</label><select id="editLane"><option>Expedites</option><option>Funded Rentals</option><option>Ship Requested</option><option>Accessories</option><option>Daily Queue</option></select></div>
       <div class="field full"><label for="editCrm">CRM link</label><input id="editCrm" type="url" placeholder="https://crm.example.com/record/..."></div><div class="field full"><label for="editNotes">Notes</label><textarea id="editNotes"></textarea></div>
-    </div><div class="footer"><a id="editCrmButton" class="btn ghost" href="#" target="_blank" rel="noopener">Open CRM</a><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button class="btn" type="submit">Save changes</button></div></form></dialog>
+    </div><div id="fileLogPanel" class="hide"></div><div class="footer"><a id="editCrmButton" class="btn ghost" href="#" target="_blank" rel="noopener">Open CRM</a><button id="unassignFileButton" class="btn secondary" type="button" data-action="unassign-file">Unassign file</button><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button class="btn" type="submit">Save changes</button></div></form></dialog>
 
     <dialog id="bulkModal" class="wide-dialog"><form method="dialog" id="bulkForm" class="section bulk"><div class="dialog-head"><div><div class="eyebrow">Device Systems intake</div><h3>Bulk add files</h3></div><button class="icon-btn" type="button" data-action="close-dialog" aria-label="Close">x</button></div><p class="help">Copy rows in Excel and paste them here in this exact order: <b>Last Name | First Name | Device | Loan Type | Queue Date | Vocabulary | Accessories/Keyguard/Notes</b>. Review and edit every line below before importing.</p><div class="field"><label for="bulkRows">Excel rows</label><textarea id="bulkRows" placeholder="Paste tab-separated rows here..."></textarea></div><div id="bulkMessage" class="muted"></div><div id="bulkPreview" class="preview bulk-preview hide"></div><div class="footer"><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button id="bulkSubmit" class="btn" type="submit">Add files to Device Systems</button></div></form></dialog>
 
@@ -579,6 +600,7 @@ function rowToFile(row) {
 }
 
 function fileToRow(file) {
+  const lane = file.lane || (file.expires ? 'Ship Requested' : laneForLoan(file.loan || ''));
   return {
     last_name: file.last,
     first_name: file.first,
@@ -594,9 +616,9 @@ function fileToRow(file) {
     expiration_date: file.expires || null,
     vocabulary: file.vocab || '',
     notes: file.notes || '',
-    priority: priorityForLane(file.lane || laneForLoan(file.loan || '')),
+    priority: priorityForLane(lane),
     status: file.status || 'Ready for Pre-Prep',
-    lane: file.lane || laneForLoan(file.loan || ''),
+    lane,
     crm_link: file.crm || '',
     prepper: file.prepper || '',
     prepped_by: file.preppedBy || '',
@@ -607,16 +629,16 @@ function fileToRow(file) {
 }
 
 function setConnection(state, detail = '') {
-  connectionState = detail || state;
   const dot = $('connectionDot');
   const text = $('connectionText');
+  if (state !== 'Refreshing') connectionState = detail || state;
   if (!dot || !text) return;
-  dot.className = `dot ${state === 'Live' ? 'online' : state === 'Error' ? 'error' : ''}`;
-  text.textContent = connectionState;
+  dot.className = `dot ${state === 'Live' ? 'online' : state === 'Error' ? 'error' : state === 'Refreshing' ? 'refreshing' : ''}`;
+  text.textContent = state === 'Refreshing' ? (connectionState === 'Connecting' ? 'Live' : connectionState) : connectionState;
 }
 
 async function loadData() {
-  setConnection('Connecting', 'Loading queue');
+  setConnection(connectionState === 'Live' ? 'Refreshing' : 'Connecting', connectionState === 'Live' ? 'Live' : 'Loading queue');
   const [fileResult, codeResult, specialistResult, coordinatorResult] = await Promise.all([
     supabase.from('trial_files').select('*').order('created_at', { ascending: true }).order('id', { ascending: true }),
     supabase.from('gipod_codes').select('*').order('created_at', { ascending: true }),
@@ -634,6 +656,7 @@ async function loadData() {
     id: row.id,
     code: row.code,
     usedOn: row.used_on || '',
+    usedDate: row.used_date || '',
     note: row.note || ''
   }));
   specialists = specialistResult.data.map(rowToSpecialist);
@@ -709,6 +732,17 @@ async function loadProfile(userId = selectedProfileId || currentUser.id) {
   if (activityResult.error) return showError(activityResult.error);
   profileUser = profileResult.data;
   profileActivity = activityResult.data || [];
+}
+
+async function loadFileLogs(fileId) {
+  const { data, error } = await supabase
+    .from('app_file_logs')
+    .select('*')
+    .eq('file_id', fileId)
+    .order('created_at', { ascending: false });
+  if (error) return showError(error);
+  fileLogs = data || [];
+  renderFileLogPanel();
 }
 
 function subscribeRealtime() {
@@ -859,7 +893,18 @@ function prepQaLog(file) {
 }
 
 function fileCard(file, name) {
-  return `<article class="file-card ${name === 'Expedites' ? 'ex' : ''}" data-action="open-file" data-id="${file.id}"><div class="topline"><b>${esc(file.last)}, ${esc(file.first)}</b><span class="pill ${statusClass(file)}">${esc(file.status)}</span></div><div>${esc(file.device)}</div><div class="file-meta">${esc(file.loan || 'No loan type')} - Ship by ${esc(file.expires || 'none')}</div>${prepQaLog(file)}${workflowButtons(file)}${actionButtons(file)}</article>`;
+  const accessories = fileAccessories(file);
+  return `<article class="file-card ${name === 'Expedites' ? 'ex' : ''}" data-action="open-file" data-id="${file.id}">
+    <div class="topline"><b>${esc(file.last)}, ${esc(file.first)}</b><span class="pill ${statusClass(file)}">${esc(file.status)}</span></div>
+    <div>${esc(file.device)}</div>
+    <div class="file-meta">${esc(file.loan || 'No loan type')} - Ship by ${esc(formatDate(file.expires))}</div>
+    <div class="file-card-details">
+      <div><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
+      <div><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
+      <div><span>Notes</span><b>${esc(file.notes || 'none')}</b></div>
+    </div>
+    ${prepQaLog(file)}${workflowButtons(file)}${actionButtons(file)}
+  </article>`;
 }
 
 function renderLanes(target, list, names = laneNames) {
@@ -955,7 +1000,7 @@ function showPrepNotification(file) {
   toast.innerHTML = `
     <div>
       <strong>Prep ready: ${esc(file.last)}, ${esc(file.first)}</strong>
-      <span>${esc(file.device || 'Device not listed')} ${file.expires ? `- ship by ${esc(file.expires)}` : ''}</span>
+      <span>${esc(file.device || 'Device not listed')} ${file.expires ? `- ship by ${esc(formatDate(file.expires))}` : ''}</span>
     </div>
     <button class="btn small" data-action="claim-prep-notification" data-id="${file.id}" type="button">Claim</button>
   `;
@@ -1000,6 +1045,8 @@ async function claimPrepFromNotification(id) {
   dismissPrepNotification(id);
   if (!data) {
     alert('This prep was already claimed by another coordinator.');
+  } else {
+    await logFileChanges(id, file, patch);
   }
   await loadData();
 }
@@ -1015,7 +1062,7 @@ function renderLeadShipped() {
     .filter((file) => file.status === 'Shipped' && !historyIds.has(file.id))
     .map((file) => ({ first_name: file.first, last_name: file.last, device: file.device, loan_type: file.loan, lane: file.lane, shipped_date: 'Current queue' }));
   const rows = [...shipmentHistory, ...currentShipped];
-  return `<div class="table-wrap"><table class="table"><thead><tr><th>Client</th><th>Device</th><th>Loan</th><th>Lane</th><th>Shipped date</th></tr></thead><tbody>${tableRows(rows.map((item) => `<tr><td>${esc(item.last_name)}, ${esc(item.first_name)}</td><td>${esc(item.device || 'Not listed')}</td><td>${esc(item.loan_type || 'Not listed')}</td><td>${esc(item.lane || 'Not listed')}</td><td>${esc(item.shipped_date || '')}</td></tr>`), 'No shipped files have been logged yet.', 5)}</tbody></table></div>`;
+  return `<div class="table-wrap"><table class="table"><thead><tr><th>Client</th><th>Device</th><th>Loan</th><th>Lane</th><th>Shipped date</th></tr></thead><tbody>${tableRows(rows.map((item) => `<tr><td>${esc(item.last_name)}, ${esc(item.first_name)}</td><td>${esc(item.device || 'Not listed')}</td><td>${esc(item.loan_type || 'Not listed')}</td><td>${esc(item.lane || 'Not listed')}</td><td>${item.shipped_date === 'Current queue' ? 'Current queue' : esc(formatDate(item.shipped_date))}</td></tr>`), 'No shipped files have been logged yet.', 5)}</tbody></table></div>`;
 }
 
 function renderLeadTraining() {
@@ -1031,7 +1078,7 @@ function currentTaskForUser(user) {
   const latest = teamActivity
     .filter((item) => item.user_id === user.id)
     .sort((a, b) => String(b.latest_at || '').localeCompare(String(a.latest_at || '')))[0];
-  return latest ? `${formatAction(latest.action)} on ${latest.activity_date}` : 'No recent action';
+  return latest ? `${formatAction(latest.action)} on ${formatDate(latest.activity_date)}` : 'No recent action';
 }
 
 function renderLeadCurrentTasks() {
@@ -1075,7 +1122,7 @@ function objectTotalsTable(title, totals) {
 function renderLeadCleanups() {
   return `<div class="profile-grid">${eodCleanups.map((cleanup) => `
     <section class="profile-panel">
-      <div class="preprep-head"><div><h3>${esc(cleanup.cleanup_date)}</h3><div class="muted">${cleanup.file_count || 0} shipped file${cleanup.file_count === 1 ? '' : 's'} cleaned up</div></div><button class="btn small danger" data-action="delete-cleanup" data-id="${cleanup.id}" type="button">Delete report</button></div>
+      <div class="preprep-head"><div><h3>${esc(formatDate(cleanup.cleanup_date))}</h3><div class="muted">${cleanup.file_count || 0} shipped file${cleanup.file_count === 1 ? '' : 's'} cleaned up</div></div><button class="btn small danger" data-action="delete-cleanup" data-id="${cleanup.id}" type="button">Delete report</button></div>
       <div class="cleanup-grid">
         ${objectTotalsTable('Loan types', cleanup.loan_totals)}
         ${objectTotalsTable('Device types', cleanup.device_totals)}
@@ -1190,7 +1237,7 @@ function renderProfile() {
           <div class="card stat"><b>${profileCompletedCount('prep')}</b><span>Completed preps</span></div>
           <div class="card stat"><b>${profileCompletedCount('qa')}</b><span>Completed QA</span></div>
         </div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Claimed job</th><th>Status</th><th>Ship by</th></tr></thead><tbody>${claimed.map((file) => `<tr><td>${esc(file.last)}, ${esc(file.first)}</td><td>${esc(file.status)}</td><td>${esc(file.expires || 'none')}</td></tr>`).join('') || '<tr><td colspan="3"><div class="empty">No claimed jobs.</div></td></tr>'}</tbody></table></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Claimed job</th><th>Status</th><th>Ship by</th></tr></thead><tbody>${claimed.map((file) => `<tr><td>${esc(file.last)}, ${esc(file.first)}</td><td>${esc(file.status)}</td><td>${esc(formatDate(file.expires))}</td></tr>`).join('') || '<tr><td colspan="3"><div class="empty">No claimed jobs.</div></td></tr>'}</tbody></table></div>
       </section>
       <section class="profile-panel">
         <h3>Weekly Totals</h3>
@@ -1246,7 +1293,7 @@ function renderPrePrep() {
         : '<span class="muted">Unclaimed</span>';
     const accessories = fileAccessories(file);
     const laneSelect = `<select class="inline-select" data-action="assign-lane" data-id="${file.id}" aria-label="Lane for ${esc(file.last)}, ${esc(file.first)}">${laneNames.map((lane) => `<option value="${esc(lane)}" ${file.lane === lane ? 'selected' : ''}>${esc(lane)}</option>`).join('')}</select>`;
-    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(file.date || 'none')}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
+    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(formatDate(file.date))}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
   }).join('') || '<tr><td colspan="14"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
   const visibleIds = rows.map((file) => file.id);
   const selectAll = $('selectAllFiles');
@@ -1262,8 +1309,8 @@ function renderPrePrep() {
   const visibleCodes = gipodCodes.filter((item) => codeTab === 'used' ? item.usedOn : !item.usedOn);
   $('gipodRows').innerHTML = visibleCodes.map((item) => {
     const missingDuplicateNote = duplicateCrmNeedsNote(item);
-    return `<tr class="${missingDuplicateNote ? 'duplicate-crm' : ''}"><td><b>${esc(item.code)}</b></td><td><span class="pill ${item.usedOn ? 'prep' : 'ready'}">${item.usedOn ? 'Used' : 'Available'}</span></td><td>${esc(item.usedOn || 'none')}${missingDuplicateNote ? '<span class="duplicate-warning">Duplicate CRM - add one note</span>' : ''}</td><td><textarea class="note-input" data-code-note="${item.id}" aria-label="GIPOD note for ${esc(item.code)}">${esc(item.note || '')}</textarea></td><td><div class="actions"><button class="btn small secondary" data-action="save-code-note" data-id="${item.id}" type="button">Save note</button><button class="btn small ${item.usedOn ? 'secondary' : ''}" data-action="use-code" data-id="${item.id}" type="button">${item.usedOn ? 'Edit usage' : 'Use code'}</button></div></td></tr>`;
-  }).join('') || `<tr><td colspan="5"><div class="empty">No ${codeTab === 'used' ? 'used' : 'unused'} GIPOD codes.</div></td></tr>`;
+    return `<tr class="${missingDuplicateNote ? 'duplicate-crm' : ''}"><td><b>${esc(item.code)}</b></td><td><span class="pill ${item.usedOn ? 'prep' : 'ready'}">${item.usedOn ? 'Used' : 'Available'}</span></td><td>${esc(item.usedOn || 'none')}${missingDuplicateNote ? '<span class="duplicate-warning">Duplicate CRM - add one note</span>' : ''}</td><td>${esc(formatDate(item.usedDate))}</td><td><textarea class="note-input" data-code-note="${item.id}" aria-label="GIPOD note for ${esc(item.code)}">${esc(item.note || '')}</textarea></td><td><div class="actions"><button class="btn small secondary" data-action="save-code-note" data-id="${item.id}" type="button">Save note</button><button class="btn small ${item.usedOn ? 'secondary' : ''}" data-action="use-code" data-id="${item.id}" type="button">${item.usedOn ? 'Edit usage' : 'Use code'}</button></div></td></tr>`;
+  }).join('') || `<tr><td colspan="6"><div class="empty">No ${codeTab === 'used' ? 'used' : 'unused'} GIPOD codes.</div></td></tr>`;
 }
 
 function renderCurrentView() {
@@ -1498,6 +1545,65 @@ function priorityForLane(lane) {
   return lane === 'Expedites' ? 'EXPEDITE' : 'Normal';
 }
 
+function actorName() {
+  return currentUserName() || 'Unknown user';
+}
+
+async function addFileLog(fileId, action, fieldName = '', oldValue = '', newValue = '') {
+  if (!fileId) return;
+  const { error } = await supabase.from('app_file_logs').insert({
+    file_id: fileId,
+    actor_user_id: currentUser?.id || null,
+    actor_name: actorName(),
+    action,
+    field_name: fieldName,
+    old_value: displayValue(oldValue),
+    new_value: displayValue(newValue)
+  });
+  if (error) console.error('File log insert failed:', error);
+}
+
+async function logFileChanges(fileId, current, patch) {
+  if (!current) return;
+  const labels = {
+    last: 'Last name',
+    first: 'First name',
+    device: 'Device',
+    deviceNumber: 'Device number',
+    gipod: 'GIPOD code',
+    cameraNumber: 'Camera 1',
+    cameraNumber2: 'Camera 2',
+    cameraNumber3: 'Camera 3',
+    cameraNumber4: 'Camera 4',
+    loan: 'Loan type',
+    date: 'Queue date',
+    expires: 'Ship by date',
+    vocab: 'Vocabulary',
+    status: 'Status',
+    lane: 'Lane',
+    crm: 'CRM link',
+    notes: 'Notes',
+    prepper: 'Specialist',
+    preppedBy: 'Prepped by',
+    qaBy: 'QA by'
+  };
+  const rows = Object.entries(patch)
+    .filter(([key]) => labels[key])
+    .filter(([key, value]) => displayValue(current[key]) !== displayValue(value))
+    .map(([key, value]) => ({
+      file_id: fileId,
+      actor_user_id: currentUser?.id || null,
+      actor_name: actorName(),
+      action: `${labels[key]} changed`,
+      field_name: labels[key],
+      old_value: displayValue(current[key]),
+      new_value: displayValue(value)
+    }));
+  if (!rows.length) return;
+  const { error } = await supabase.from('app_file_logs').insert(rows);
+  if (error) console.error('File log insert failed:', error);
+}
+
 function needsGipod(file) {
   const vocab = file.vocab.toLowerCase();
   const device = file.device.toLowerCase();
@@ -1519,7 +1625,8 @@ async function claimNextGipodCode(fileId) {
 
   const { data, error } = await supabase.rpc('claim_next_gipod_code', {
     p_file_id: fileId,
-    p_crm_number: crmNumber
+    p_crm_number: crmNumber,
+    p_used_date: todayLocalDate()
   });
 
   if (error) return showError(error);
@@ -1527,12 +1634,38 @@ async function claimNextGipodCode(fileId) {
     alert('No available GIPOD codes are left.');
     return;
   }
+  await addFileLog(fileId, 'GIPOD code assigned', 'GIPOD code', file.gipod || 'none', data);
   await loadData();
 }
 
 function syncLaneFromLoan() {
   const forced = laneForLoan($('editLoan').value, '');
   if (forced) $('editLane').value = forced;
+}
+
+function syncLaneFromShipBy() {
+  if ($('editExpires').value) $('editLane').value = 'Ship Requested';
+}
+
+function setFileTab(tab) {
+  activeFileTab = tab === 'log' ? 'log' : 'details';
+  $('file-tab-details')?.classList.toggle('active', activeFileTab === 'details');
+  $('file-tab-log')?.classList.toggle('active', activeFileTab === 'log');
+  $('fileDetailsPanel')?.classList.toggle('hide', activeFileTab !== 'details');
+  $('fileLogPanel')?.classList.toggle('hide', activeFileTab !== 'log');
+}
+
+function renderFileLogPanel() {
+  const panel = $('fileLogPanel');
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Date</th><th>User</th><th>Action</th><th>Old</th><th>New</th></tr></thead>
+        <tbody>${tableRows(fileLogs.map((item) => `<tr><td>${esc(formatDateTime(item.created_at))}</td><td>${esc(item.actor_name || 'Unknown')}</td><td>${esc(item.action || item.field_name || 'Change')}</td><td>${esc(item.old_value || 'none')}</td><td>${esc(item.new_value || 'none')}</td></tr>`), 'No action log yet.', 5)}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 function renderCameraFields(file = {}) {
@@ -1556,6 +1689,8 @@ function addCameraField() {
 function openFile(id) {
   const file = files.find((item) => item.id === id);
   if (!file) return;
+  activeFileTab = 'details';
+  fileLogs = [];
   const editable = canEditFiles();
   $('editId').value = file.id;
   $('fileModalTitle').textContent = `${file.last}, ${file.first}`;
@@ -1583,15 +1718,19 @@ function openFile(id) {
     $(`edit${key}`).value = value || '';
   });
   renderCameraFields(file);
-  syncLaneFromLoan();
+  if (file.expires && (!file.lane || file.lane === 'Daily Queue')) $('editLane').value = 'Ship Requested';
   $('editCrmButton').href = file.crm || '#';
   $('editCrmButton').classList.toggle('hide', !file.crm);
   $('fileForm').querySelectorAll('input, select, textarea, button[type="submit"]').forEach((control) => {
     control.disabled = !editable;
   });
   $('addCameraButton').disabled = !editable || document.querySelectorAll('.camera-extra.hide').length === 0;
+  $('unassignFileButton').disabled = !editable;
   $('fileModal').querySelector('[data-action="close-dialog"]').disabled = false;
+  setFileTab('details');
+  renderFileLogPanel();
   $('fileModal').showModal();
+  loadFileLogs(file.id);
 }
 
 async function updateFile(id, patch, reload = true) {
@@ -1599,14 +1738,17 @@ async function updateFile(id, patch, reload = true) {
   const row = fileToRow({ ...current, ...patch });
   const { error } = await supabase.from('trial_files').update(row).eq('id', id);
   if (error) return showError(error);
+  await logFileChanges(id, current, patch);
   if (reload) await loadData();
 }
 
 async function updateGipod(id, patch, reload = true) {
   const current = gipodCodes.find((item) => item.id === id);
+  const usedOn = patch.usedOn ?? current.usedOn ?? '';
   const row = {
     code: patch.code ?? current.code,
-    used_on: patch.usedOn ?? current.usedOn ?? '',
+    used_on: usedOn,
+    used_date: usedOn ? (patch.usedDate ?? current.usedDate ?? todayLocalDate()) : null,
     note: patch.note ?? current.note ?? ''
   };
   const { error } = await supabase.from('gipod_codes').update(row).eq('id', id);
@@ -1622,6 +1764,7 @@ async function saveFile(event) {
   }
   const id = $('editId').value;
   const loan = $('editLoan').value.trim();
+  const expires = $('editExpires').value;
   const patch = {
     last: $('editLast').value.trim(),
     first: $('editFirst').value.trim(),
@@ -1634,15 +1777,39 @@ async function saveFile(event) {
     cameraNumber4: $('editCameraNumber4')?.value.trim() || '',
     loan,
     date: $('editDate').value,
-    expires: $('editExpires').value,
+    expires,
     vocab: $('editVocab').value.trim(),
     status: $('editStatus').value,
-    lane: $('editLane').value,
+    lane: expires ? 'Ship Requested' : $('editLane').value,
     crm: $('editCrm').value.trim(),
     notes: $('editNotes').value.trim()
   };
   await updateFile(id, patch);
   $('fileModal').close();
+}
+
+async function unassignOpenFile() {
+  if (!canEditFiles()) return;
+  const id = $('editId').value;
+  const file = files.find((item) => item.id === id);
+  if (!file) return;
+  const patch = {
+    prepper: '',
+    preppedBy: '',
+    preppedById: '',
+    qaBy: '',
+    qaById: ''
+  };
+  if (file.status.startsWith('Being prepped by ')) patch.status = 'Ready for Prep';
+  if (file.status.startsWith("Being QA'd by ")) patch.status = 'Ready for QA';
+  if (!confirm(`Unassign ${file.last}, ${file.first}?`)) return;
+  await updateFile(id, patch);
+  await addFileLog(id, 'File unassigned', 'Assignment', assignmentSummary(file), 'none');
+  $('fileModal').close();
+}
+
+function assignmentSummary(file) {
+  return [file.prepper && `Specialist: ${file.prepper}`, file.preppedBy && `Prep: ${file.preppedBy}`, file.qaBy && `QA: ${file.qaBy}`].filter(Boolean).join(', ') || 'none';
 }
 
 function showBulkModal() {
@@ -1703,8 +1870,8 @@ function parseBulkRows() {
       vocab: cells[5] || '',
       notes: cells[6] || '',
       priority: (cells[3] || '').trim().toUpperCase() === 'SL' ? 'EXPEDITE' : 'Normal',
-      lane: laneForLoan(cells[3] || ''),
       expires: '',
+      lane: '',
       crm: link,
       status: 'Ready for Pre-Prep',
       prepper: ''
@@ -1770,8 +1937,8 @@ function editedBulkRows() {
       vocab: value('vocab'),
       notes: value('notes'),
       priority: loan.trim().toUpperCase() === 'SL' ? 'EXPEDITE' : 'Normal',
-      lane: laneForLoan(loan),
       expires: '',
+      lane: '',
       crm: value('crm'),
       status: 'Ready for Pre-Prep',
       prepper: ''
@@ -1993,7 +2160,7 @@ async function bulkDeleteFiles() {
 async function deleteCleanup(id) {
   if (!canManageUsers()) return;
   const cleanup = eodCleanups.find((item) => item.id === id);
-  if (!cleanup || !confirm(`Delete the end-of-day cleanup report for ${cleanup.cleanup_date}? This cannot be undone.`)) return;
+  if (!cleanup || !confirm(`Delete the end-of-day cleanup report for ${formatDate(cleanup.cleanup_date)}? This cannot be undone.`)) return;
   const { error } = await supabase.from('app_eod_cleanups').delete().eq('id', id);
   if (error) return showError(error);
   await loadData();
@@ -2027,7 +2194,7 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'select-file', 'assign-lane', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note'].includes(action)) event.stopPropagation();
+  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'select-file', 'assign-lane', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
@@ -2048,6 +2215,8 @@ document.addEventListener('click', async (event) => {
   if (action === 'change-own-pin') await changeOwnPin();
   if (action === 'save-profile-schedule') await saveProfileSchedule(id);
   if (action === 'save-trained-devices') await saveTrainedDevices(id);
+  if (action === 'file-tab') setFileTab(target.dataset.name);
+  if (action === 'unassign-file') await unassignOpenFile();
   if (action === 'close-dialog') target.closest('dialog')?.close();
 });
 

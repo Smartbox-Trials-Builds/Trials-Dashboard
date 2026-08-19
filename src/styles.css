@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700;800&display=swap');
+
 :root {
   --bg: #f4f7fb;
   --panel: #fff;
@@ -30,7 +32,7 @@
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font: 14px/1.45 Inter, Segoe UI, Arial, sans-serif;
+  font: 14px/1.45 Quicksand, Segoe UI, Arial, sans-serif;
   background: var(--bg);
   color: var(--ink);
 }
@@ -117,6 +119,7 @@ h2, h3 { margin: 0 0 12px; letter-spacing: 0; }
   background: var(--warn);
 }
 .dot.online { background: var(--ok); }
+.dot.refreshing { background: var(--warn); }
 .dot.error { background: var(--bad); }
 .wrap {
   display: grid;
@@ -372,6 +375,26 @@ input:focus, select:focus, textarea:focus {
 .file-card.ex { border-left-color: var(--bad); }
 .topline { display: flex; justify-content: space-between; gap: 10px; }
 .file-meta { font-size: 12px; color: var(--muted); margin: 5px 0 10px; }
+.file-card-details {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 10px;
+  font-size: 12px;
+}
+.file-card-details div {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.file-card-details span {
+  color: var(--muted);
+  font-weight: 800;
+}
+.file-card-details b {
+  color: var(--ink);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
 .file-log {
   margin: 6px 0 10px;
   font-size: 12px;
@@ -379,6 +402,8 @@ input:focus, select:focus, textarea:focus {
   color: var(--brand-dark);
 }
 .file-card select { width: 100%; }
+.file-tabs { margin: 14px 0; }
+#fileLogPanel { min-height: 220px; }
 dialog {
   border: 0;
   border-radius: 8px;
