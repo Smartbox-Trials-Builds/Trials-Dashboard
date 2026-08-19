@@ -404,6 +404,8 @@ dialog .section { padding: 22px; }
   font-weight: 800;
 }
 .check-row input { width: auto; }
+.select-cell { width: 34px; text-align: center; }
+.select-cell input { width: auto; cursor: pointer; }
 .full { grid-column: 1 / -1; }
 .form textarea { min-height: 80px; resize: vertical; }
 .camera-fields {
