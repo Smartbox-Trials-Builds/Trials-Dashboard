@@ -26,19 +26,20 @@ let gipodCodes = [];
 let users = [];
 let specialists = [];
 let coordinators = [];
-let coordinatorQueue = [];
 let shipmentHistory = [];
 let eodCleanups = [];
 let teamActivity = [];
 let selectedProfileId = '';
 let profileUser = null;
 let profileActivity = [];
-let autoQueueRunning = false;
 let view = 'dashboard';
 let prepTab = 'files';
+let codeTab = 'unused';
 let leadTab = 'schedules';
 let prepperFilter = 'All';
 let selectedFileIds = new Set();
+let activePrepNotifications = new Map();
+let seenPrepNotifications = new Set();
 let bulkLinks = [];
 let connectionState = 'Connecting';
 let theme = localStorage.getItem('theme') || 'light';
@@ -93,10 +94,6 @@ function canManageUsers() {
 
 function canEditFiles() {
   return currentUser && effectiveRole() !== 'Device Coordinator';
-}
-
-function canUseAutoQueue() {
-  return currentUser && effectiveRole() === 'Device Coordinator';
 }
 
 function hasProfileView() {
@@ -272,7 +269,6 @@ function renderShell() {
             <button id="lead-tab-schedules" class="tab active" type="button">Schedules</button>
             <button id="lead-tab-shipped" class="tab" type="button">Shipped Files</button>
             <button id="lead-tab-training" class="tab" type="button">Trained On</button>
-            <button id="lead-tab-queue" class="tab" type="button">Automated Queue</button>
             <button id="lead-tab-current" class="tab" type="button">Current Tasks</button>
             <button id="lead-tab-weekly" class="tab" type="button">Weekly User Totals</button>
             <button id="lead-tab-totals" class="tab" type="button">Loan / Device Totals</button>
@@ -283,7 +279,6 @@ function renderShell() {
         <section class="card section" id="dashboardView">
           <div class="preprep-head">
             <div><h3>Active device queue</h3><div class="muted">Files are organized into lanes in the order the team should work them.</div></div>
-            ${canUseAutoQueue() ? `<div class="queue-control"><button id="autoQueueButton" class="btn" type="button">Enter automated queue</button><span id="autoQueueStatus" class="muted"></span></div>` : ''}
           </div>
           <div class="kanban" id="dashboardLanes"></div>
         </section>
@@ -298,18 +293,20 @@ function renderShell() {
           </div>
           <div class="tabs">
             <button id="tab-files" class="tab active" type="button">Files</button>
-            <button id="tab-queue" class="tab" type="button">Automated Queue</button>
             <button id="tab-codes" class="tab" type="button">GIPOD Codes</button>
           </div>
-          <div id="automatedQueuePanel" class="hide"></div>
           <div id="prepFilesPanel">
             <div class="tabs assignment-tabs" id="prepperTabs" aria-label="Filter files by specialist"></div>
             <div class="table-wrap">
-              <table class="table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Vocabulary requested</th><th>GIPOD</th><th>Loan</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
+              <table class="table device-systems-table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Vocabulary requested</th><th>GIPOD</th><th>Loan</th><th>Lane</th><th>Accessories</th><th>Notes</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
             </div>
           </div>
           <div id="prepCodesPanel" class="table-wrap hide">
             <p class="help">Use a code manually by entering its 5-digit CRM number. If a CRM number is used more than once, the duplicate rows are highlighted light red until a note is added to either one.</p>
+            <div class="tabs sub-tabs">
+              <button id="code-tab-unused" class="tab active" data-action="code-filter" data-name="unused" type="button">Unused <span id="unusedCodeCount" class="count">0</span></button>
+              <button id="code-tab-used" class="tab" data-action="code-filter" data-name="used" type="button">Used <span id="usedCodeCount" class="count">0</span></button>
+            </div>
             <table class="table"><thead><tr><th>GIPOD code</th><th>Status</th><th>CRM number used on</th><th>Note</th><th></th></tr></thead><tbody id="gipodRows"></tbody></table>
           </div>
         </section>
@@ -360,7 +357,6 @@ function renderShell() {
   if ($('adminViewRole')) $('adminViewRole').addEventListener('change', setAdminViewRole);
   if ($('refreshUsersButton')) $('refreshUsersButton').addEventListener('click', loadUsers);
   if ($('createUserForm')) $('createUserForm').addEventListener('submit', createUser);
-  if ($('autoQueueButton')) $('autoQueueButton').addEventListener('click', toggleAutoQueue);
   if ($('shippingCleanupButton')) $('shippingCleanupButton').addEventListener('click', endOfDayCleanup);
   if ($('leadCleanupButton')) $('leadCleanupButton').addEventListener('click', endOfDayCleanup);
   $('search').addEventListener('input', renderCurrentView);
@@ -368,9 +364,8 @@ function renderShell() {
   $('bulkDeleteFilesButton').addEventListener('click', bulkDeleteFiles);
   $('bulkCodesButton').addEventListener('click', showCodeModal);
   $('tab-files').addEventListener('click', () => setPrepTab('files'));
-  $('tab-queue').addEventListener('click', () => setPrepTab('queue'));
   $('tab-codes').addEventListener('click', () => setPrepTab('codes'));
-  ['schedules', 'shipped', 'training', 'queue', 'current', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
+  ['schedules', 'shipped', 'training', 'current', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
     if ($(`lead-tab-${tab}`)) $(`lead-tab-${tab}`).addEventListener('click', () => setLeadTab(tab));
   });
   $('fileForm').addEventListener('submit', saveFile);
@@ -622,19 +617,17 @@ function setConnection(state, detail = '') {
 
 async function loadData() {
   setConnection('Connecting', 'Loading queue');
-  const [fileResult, codeResult, specialistResult, coordinatorResult, queueResult] = await Promise.all([
+  const [fileResult, codeResult, specialistResult, coordinatorResult] = await Promise.all([
     supabase.from('trial_files').select('*').order('created_at', { ascending: true }).order('id', { ascending: true }),
     supabase.from('gipod_codes').select('*').order('created_at', { ascending: true }),
     supabase.rpc('list_device_specialists'),
-    supabase.rpc('list_device_coordinators'),
-    supabase.from('coordinator_auto_queue').select('*').order('entered_at', { ascending: true })
+    supabase.rpc('list_device_coordinators')
   ]);
 
   if (fileResult.error) throw fileResult.error;
   if (codeResult.error) throw codeResult.error;
   if (specialistResult.error) throw specialistResult.error;
   if (coordinatorResult.error) throw coordinatorResult.error;
-  if (queueResult.error) throw queueResult.error;
 
   files = fileResult.data.map(rowToFile);
   gipodCodes = codeResult.data.map((row) => ({
@@ -645,16 +638,12 @@ async function loadData() {
   }));
   specialists = specialistResult.data.map(rowToSpecialist);
   coordinators = coordinatorResult.data.map(rowToSpecialist);
-  coordinatorQueue = queueResult.data || [];
   if (canManageUsers()) {
     await loadUsers(false);
     await loadLeadDashboardData();
   }
   if (view === 'profile' && selectedProfileId) await loadProfile(selectedProfileId);
-  if (await runAutoQueueAssignments()) {
-    await loadData();
-    return;
-  }
+  queuePrepReadyNotifications();
   setConnection('Live');
   render();
 }
@@ -728,7 +717,6 @@ function subscribeRealtime() {
     .channel(`trials-dashboard-db-changes-${Date.now()}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'trial_files' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'gipod_codes' }, loadData)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'coordinator_auto_queue' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'app_shipment_activity' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'app_eod_cleanups' }, loadData)
     .subscribe((status) => {
@@ -851,7 +839,8 @@ function statusStepFor(file) {
 function workflowButtons(file) {
   const buttons = [];
   const isCoordinator = currentUser?.role === 'Device Coordinator' || effectiveRole() === 'Device Coordinator';
-  if (isCoordinator && file.status === 'Ready for Prep') {
+  const coordinator = currentCoordinatorProfile();
+  if (isCoordinator && file.status === 'Ready for Prep' && coordinator && isTrainedForFile(coordinator, file)) {
     buttons.push(`<button class="btn small card-step" data-action="claim-prep" data-id="${file.id}">Claim prep</button>`);
   }
   if (isCoordinator && file.status === 'Ready for QA') {
@@ -913,17 +902,6 @@ function renderUsers() {
   `).join('') || '<tr><td colspan="6"><div class="empty">No users have signed up yet.</div></td></tr>';
 }
 
-function renderAutoQueueControl() {
-  if (!$('autoQueueButton') || !canUseAutoQueue()) return;
-  const queueRow = coordinatorQueue.find((row) => row.user_id === currentUser.id);
-  const waitingCount = coordinatorQueue.length;
-  $('autoQueueButton').textContent = queueRow ? 'Leave automated queue' : 'Enter automated queue';
-  $('autoQueueButton').classList.toggle('secondary', Boolean(queueRow));
-  $('autoQueueStatus').textContent = queueRow
-    ? `In queue, position ${coordinatorQueue.findIndex((row) => row.user_id === currentUser.id) + 1} of ${waitingCount}`
-    : `${waitingCount} coordinator${waitingCount === 1 ? '' : 's'} waiting`;
-}
-
 function normalizeDeviceName(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/s$/, '');
 }
@@ -942,27 +920,89 @@ function isTrainedForFile(user, file) {
   return trainedDeviceList(user).some((device) => deviceMatchesTraining(file.device, device));
 }
 
-function queuedCoordinatorRows() {
-  return coordinatorQueue.map((queueRow, index) => {
-    const user = coordinators.find((item) => item.id === queueRow.user_id) || users.find((item) => item.id === queueRow.user_id);
-    return { queueRow, user, position: index + 1 };
-  }).filter((item) => item.user);
+function currentCoordinatorProfile() {
+  if (effectiveRole() !== 'Device Coordinator') return null;
+  return coordinators.find((user) => user.id === currentUser?.id) || {
+    id: currentUser?.id,
+    firstName: currentUser?.firstName,
+    lastName: currentUser?.lastName,
+    trainedDevices: []
+  };
 }
 
-function renderAutomatedQueuePanel() {
-  const rows = queuedCoordinatorRows();
-  return `
-    <section class="queue-panel">
-      <div class="preprep-head">
-        <div><h3>Automated coordinator queue</h3><div class="muted">FIFO order for qualified prep and QA assignment.</div></div>
-      </div>
-      <div class="table-wrap">
-        <table class="table"><thead><tr><th>Position</th><th>User</th><th>Trained devices</th><th>Waiting since</th></tr></thead><tbody>
-          ${rows.map(({ queueRow, user, position }) => `<tr><td>${position}</td><td>${esc(user.firstName)} ${esc(user.lastName)}</td><td>${trainedDeviceList(user).map(esc).join(', ') || '<span class="muted">No trained devices listed</span>'}</td><td>${esc(new Date(queueRow.entered_at).toLocaleString())}</td></tr>`).join('') || '<tr><td colspan="4"><div class="empty">No coordinators are waiting in the automated queue.</div></td></tr>'}
-        </tbody></table>
-      </div>
-    </section>
+function notificationHost() {
+  let host = $('prepNotificationHost');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'prepNotificationHost';
+    host.className = 'notification-host';
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+function dismissPrepNotification(fileId) {
+  const entry = activePrepNotifications.get(fileId);
+  if (entry?.timer) clearTimeout(entry.timer);
+  entry?.element?.remove();
+  activePrepNotifications.delete(fileId);
+}
+
+function showPrepNotification(file) {
+  if (activePrepNotifications.has(file.id) || seenPrepNotifications.has(file.id)) return;
+  seenPrepNotifications.add(file.id);
+  const toast = document.createElement('div');
+  toast.className = 'prep-notification';
+  toast.innerHTML = `
+    <div>
+      <strong>Prep ready: ${esc(file.last)}, ${esc(file.first)}</strong>
+      <span>${esc(file.device || 'Device not listed')} ${file.expires ? `- ship by ${esc(file.expires)}` : ''}</span>
+    </div>
+    <button class="btn small" data-action="claim-prep-notification" data-id="${file.id}" type="button">Claim</button>
   `;
+  notificationHost().appendChild(toast);
+  const timer = setTimeout(() => dismissPrepNotification(file.id), 10000);
+  activePrepNotifications.set(file.id, { element: toast, timer });
+}
+
+function queuePrepReadyNotifications() {
+  const coordinator = currentCoordinatorProfile();
+  if (!coordinator) return;
+  const openReadyIds = new Set(files.filter((file) => file.status === 'Ready for Prep').map((file) => file.id));
+  [...activePrepNotifications.keys()].forEach((fileId) => {
+    if (!openReadyIds.has(fileId)) dismissPrepNotification(fileId);
+  });
+  stableFileOrder(files)
+    .filter((file) => file.status === 'Ready for Prep' && isTrainedForFile(coordinator, file))
+    .forEach(showPrepNotification);
+}
+
+async function claimPrepFromNotification(id) {
+  const file = files.find((item) => item.id === id);
+  const coordinator = currentCoordinatorProfile();
+  if (!file || !coordinator || !isTrainedForFile(coordinator, file)) {
+    dismissPrepNotification(id);
+    return;
+  }
+  const initials = currentUserInitials();
+  const patch = {
+    status: `Being prepped by ${initials}`,
+    preppedBy: initials,
+    preppedById: currentUser.id
+  };
+  const { data, error } = await supabase
+    .from('trial_files')
+    .update(fileToRow({ ...file, ...patch }))
+    .eq('id', id)
+    .eq('status', 'Ready for Prep')
+    .select('id')
+    .maybeSingle();
+  if (error) return showError(error);
+  dismissPrepNotification(id);
+  if (!data) {
+    alert('This prep was already claimed by another coordinator.');
+  }
+  await loadData();
 }
 
 function renderLeadSchedules() {
@@ -1056,11 +1096,11 @@ function renderLeadReportActions() {
 
 function renderLeadDashboard() {
   if (!$('leadDashboardBody')) return;
+  if (leadTab === 'queue') leadTab = 'schedules';
   const renderers = {
     schedules: renderLeadSchedules,
     shipped: renderLeadShipped,
     training: renderLeadTraining,
-    queue: renderAutomatedQueuePanel,
     current: renderLeadCurrentTasks,
     weekly: renderLeadWeeklyUserTotals,
     totals: renderLeadShipmentTotals,
@@ -1165,7 +1205,7 @@ function renderProfile() {
       <section class="profile-panel">
         <h3>Trained Devices</h3>
         <div class="trained-list">${trainedDevices.map((device) => `<span class="pill ready">${esc(device)}</span>`).join('') || '<div class="empty">No trained devices listed.</div>'}</div>
-        <div class="field full"><label for="profileTrainedDevices">Devices trained on</label><textarea id="profileTrainedDevices" placeholder="Talkpads&#10;Grid Pads">${esc(trainedDevices.join('\n'))}</textarea><span class="muted">Enter one device type per line. Automated queue assignment only uses matching trained devices.</span></div>
+        <div class="field full"><label for="profileTrainedDevices">Devices trained on</label><textarea id="profileTrainedDevices" placeholder="Talkpads&#10;Grid Pads">${esc(trainedDevices.join('\n'))}</textarea><span class="muted">Enter one device type per line. Prep-ready notifications only show for matching trained devices.</span></div>
         <div class="footer"><button class="btn" data-action="save-trained-devices" data-id="${profileUser.id}" type="button">Save trained devices</button></div>
       </section>
       ${profileUser.id === currentUser.id ? `
@@ -1188,7 +1228,6 @@ function duplicateCrmNeedsNote(item) {
 }
 
 function renderPrePrep() {
-  if ($('automatedQueuePanel')) $('automatedQueuePanel').innerHTML = renderAutomatedQueuePanel();
   const allRows = stableFileOrder(filteredFiles().filter(isPrePrep));
   const rows = prepperFilter === 'All' ? allRows : allRows.filter((file) => file.prepper === prepperFilter);
   const existingIds = new Set(files.filter(isPrePrep).map((file) => file.id));
@@ -1206,8 +1245,10 @@ function renderPrePrep() {
       : currentUser?.role === 'Device Systems Specialist'
         ? `<button class="btn small secondary" data-action="claim-file" data-id="${file.id}">Claim</button>`
         : '<span class="muted">Unclaimed</span>';
-    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(file.date || 'none')}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
-  }).join('') || '<tr><td colspan="11"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
+    const accessories = fileAccessories(file);
+    const laneSelect = `<select class="inline-select" data-action="assign-lane" data-id="${file.id}" aria-label="Lane for ${esc(file.last)}, ${esc(file.first)}">${laneNames.map((lane) => `<option value="${esc(lane)}" ${file.lane === lane ? 'selected' : ''}>${esc(lane)}</option>`).join('')}</select>`;
+    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(file.date || 'none')}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
+  }).join('') || '<tr><td colspan="14"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
   const visibleIds = rows.map((file) => file.id);
   const selectAll = $('selectAllFiles');
   selectAll.checked = visibleIds.length > 0 && visibleIds.every((id) => selectedFileIds.has(id));
@@ -1215,10 +1256,15 @@ function renderPrePrep() {
   const bulkDeleteButton = $('bulkDeleteFilesButton');
   bulkDeleteButton.textContent = `Delete selected (${selectedFileIds.size})`;
   bulkDeleteButton.disabled = selectedFileIds.size === 0;
-  $('gipodRows').innerHTML = gipodCodes.map((item) => {
+  if ($('code-tab-unused')) $('code-tab-unused').classList.toggle('active', codeTab === 'unused');
+  if ($('code-tab-used')) $('code-tab-used').classList.toggle('active', codeTab === 'used');
+  if ($('unusedCodeCount')) $('unusedCodeCount').textContent = gipodCodes.filter((item) => !item.usedOn).length;
+  if ($('usedCodeCount')) $('usedCodeCount').textContent = gipodCodes.filter((item) => item.usedOn).length;
+  const visibleCodes = gipodCodes.filter((item) => codeTab === 'used' ? item.usedOn : !item.usedOn);
+  $('gipodRows').innerHTML = visibleCodes.map((item) => {
     const missingDuplicateNote = duplicateCrmNeedsNote(item);
     return `<tr class="${missingDuplicateNote ? 'duplicate-crm' : ''}"><td><b>${esc(item.code)}</b></td><td><span class="pill ${item.usedOn ? 'prep' : 'ready'}">${item.usedOn ? 'Used' : 'Available'}</span></td><td>${esc(item.usedOn || 'none')}${missingDuplicateNote ? '<span class="duplicate-warning">Duplicate CRM - add one note</span>' : ''}</td><td><textarea class="note-input" data-code-note="${item.id}" aria-label="GIPOD note for ${esc(item.code)}">${esc(item.note || '')}</textarea></td><td><div class="actions"><button class="btn small secondary" data-action="save-code-note" data-id="${item.id}" type="button">Save note</button><button class="btn small ${item.usedOn ? 'secondary' : ''}" data-action="use-code" data-id="${item.id}" type="button">${item.usedOn ? 'Edit usage' : 'Use code'}</button></div></td></tr>`;
-  }).join('') || '<tr><td colspan="5"><div class="empty">No GIPOD codes imported.</div></td></tr>';
+  }).join('') || `<tr><td colspan="5"><div class="empty">No ${codeTab === 'used' ? 'used' : 'unused'} GIPOD codes.</div></td></tr>`;
 }
 
 function renderCurrentView() {
@@ -1249,9 +1295,8 @@ function render() {
     if (viewElement) viewElement.classList.toggle('hide', view !== name);
     if (navElement) navElement.classList.toggle('active', view === name);
   });
-  ['files', 'queue', 'codes'].forEach((tab) => $(`tab-${tab}`).classList.toggle('active', prepTab === tab));
+  ['files', 'codes'].forEach((tab) => $(`tab-${tab}`).classList.toggle('active', prepTab === tab));
   $('prepFilesPanel').classList.toggle('hide', prepTab !== 'files');
-  $('automatedQueuePanel').classList.toggle('hide', prepTab !== 'queue');
   $('prepCodesPanel').classList.toggle('hide', prepTab !== 'codes');
   $('bulkFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkDeleteFilesButton').classList.toggle('hide', prepTab !== 'files');
@@ -1282,6 +1327,11 @@ async function openProfile(userId) {
 function setPrepTab(tab) {
   prepTab = tab;
   render();
+}
+
+function setCodeTab(tab) {
+  codeTab = tab === 'used' ? 'used' : 'unused';
+  renderPrePrep();
 }
 
 function setLeadTab(tab) {
@@ -1588,7 +1638,7 @@ async function saveFile(event) {
     expires: $('editExpires').value,
     vocab: $('editVocab').value.trim(),
     status: $('editStatus').value,
-    lane: laneForLoan(loan, $('editLane').value),
+    lane: $('editLane').value,
     crm: $('editCrm').value.trim(),
     notes: $('editNotes').value.trim()
   };
@@ -1599,7 +1649,7 @@ async function saveFile(event) {
 function showBulkModal() {
   $('bulkRows').value = '';
   bulkLinks = [];
-  $('bulkMessage').textContent = 'Paste rows to preview them before adding.';
+  $('bulkMessage').textContent = 'Paste rows to preview them before adding. You can paste more rows before importing.';
   $('bulkPreview').classList.add('hide');
   $('bulkModal').showModal();
 }
@@ -1623,8 +1673,13 @@ function captureExcelPaste(event) {
   if (!html || !text) return;
   event.preventDefault();
   const document = new DOMParser().parseFromString(html, 'text/html');
-  bulkLinks = [...document.querySelectorAll('tr')].map((row) => safeHttpLink(row.querySelector('td:first-child a[href],th:first-child a[href]')?.href || ''));
-  $('bulkRows').value = text;
+  const pastedLinks = [...document.querySelectorAll('tr')].map((row) => safeHttpLink(row.querySelector('td:first-child a[href],th:first-child a[href]')?.href || ''));
+  const textarea = $('bulkRows');
+  const existingLines = textarea.value.split(/\r?\n/).filter((line) => line.trim()).length;
+  const separator = textarea.value.trim() ? '\n' : '';
+  textarea.value = `${textarea.value.trimEnd()}${separator}${text.trim()}`;
+  while (bulkLinks.length < existingLines) bulkLinks.push('');
+  bulkLinks.push(...pastedLinks);
   previewBulkRows();
 }
 
@@ -1892,89 +1947,12 @@ async function endOfDayCleanup() {
   await loadData();
 }
 
-function nextAssignment(waitingRows, assignedFileIds, assignedUserIds) {
-  const readyFiles = stableFileOrder(files).filter((file) => !assignedFileIds.has(file.id) && ['Ready for Prep', 'Ready for QA'].includes(file.status));
-  for (const file of readyFiles) {
-    const queueRow = waitingRows.find((row) => {
-      if (assignedUserIds.has(row.user_id)) return false;
-      const user = coordinators.find((item) => item.id === row.user_id);
-      if (!user || !isTrainedForFile(user, file)) return false;
-      return file.status !== 'Ready for QA' || file.preppedById !== user.id;
-    });
-    if (queueRow) return { queueRow, file };
-  }
-  return null;
-}
-
-async function toggleAutoQueue() {
-  if (!canUseAutoQueue()) return;
-  const queueRow = coordinatorQueue.find((row) => row.user_id === currentUser.id);
-  if (queueRow) {
-    const { error } = await supabase.from('coordinator_auto_queue').delete().eq('user_id', currentUser.id);
-    if (error) return showError(error);
-  } else {
-    const { error } = await supabase.from('coordinator_auto_queue').insert({ user_id: currentUser.id });
-    if (error) return showError(error);
-  }
-  await loadData();
-}
-
-async function assignQueuedJob(queueRow, file) {
-  const user = [...users, ...coordinators].find((item) => item.id === queueRow.user_id);
-  if (!user) return false;
-  const initials = userInitials(user);
-  const patch = file.status === 'Ready for Prep'
-    ? { status: `Being prepped by ${initials}`, preppedBy: initials, preppedById: user.id }
-    : { status: `Being QA'd by ${initials}`, qaBy: initials, qaById: user.id };
-  const { error: updateError } = await supabase.from('trial_files').update(fileToRow({ ...file, ...patch })).eq('id', file.id);
-  if (updateError) {
-    showError(updateError);
-    return false;
-  }
-  const { error: queueError } = await supabase.from('coordinator_auto_queue').delete().eq('user_id', user.id);
-  if (queueError) {
-    showError(queueError);
-    return false;
-  }
-  return true;
-}
-
-async function runAutoQueueAssignments() {
-  if (autoQueueRunning || !coordinatorQueue.length) return false;
-  autoQueueRunning = true;
-  try {
-    const activeCoordinatorIds = new Set(coordinators.map((user) => user.id));
-    const waitingRows = coordinatorQueue.filter((row) => activeCoordinatorIds.has(row.user_id));
-    const assignedFiles = new Set();
-    const assignedUsers = new Set();
-    while (true) {
-      const assignment = nextAssignment(waitingRows, assignedFiles, assignedUsers);
-      if (!assignment) break;
-      const assigned = await assignQueuedJob(assignment.queueRow, assignment.file);
-      if (assigned) {
-        assignedFiles.add(assignment.file.id);
-        assignedUsers.add(assignment.queueRow.user_id);
-      } else {
-        break;
-      }
-    }
-    return assignedFiles.size > 0;
-  } finally {
-    autoQueueRunning = false;
-  }
-}
-
 async function claimPrep(id) {
   if (effectiveRole() !== 'Device Coordinator') {
     alert('Only Device Coordinators can claim prep work.');
     return;
   }
-  const initials = currentUserInitials();
-  await updateFile(id, {
-    status: `Being prepped by ${initials}`,
-    preppedBy: initials,
-    preppedById: currentUser.id
-  });
+  await claimPrepFromNotification(id);
 }
 
 async function claimQa(id) {
@@ -2050,13 +2028,15 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'select-file', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note'].includes(action)) event.stopPropagation();
+  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'select-file', 'assign-lane', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
   if (action === 'delete-cleanup') await deleteCleanup(id);
   if (action === 'delete-lead-reports') await deleteLeadReports();
+  if (action === 'claim-prep-notification') await claimPrepFromNotification(id);
   if (action === 'prepper-filter') setPrepperFilter(target.dataset.name);
+  if (action === 'code-filter') setCodeTab(target.dataset.name);
   if (action === 'use-code') showManualGipodModal(id);
   if (action === 'claim-gipod') await claimNextGipodCode(id);
   if (action === 'claim-file') await claimFile(id);
@@ -2087,6 +2067,9 @@ document.addEventListener('change', async (event) => {
   }
   if (event.target.dataset.action === 'update-user-role') {
     await updateUserRole(event.target.dataset.id, event.target.value);
+  }
+  if (event.target.dataset.action === 'assign-lane') {
+    await updateFile(event.target.dataset.id, { lane: event.target.value });
   }
 });
 

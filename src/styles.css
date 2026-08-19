@@ -299,6 +299,9 @@ input:focus, select:focus, textarea:focus {
 .assignment-tabs { margin-top: -4px; }
 .assignment-tabs .tab { white-space: nowrap; }
 .assignment-select { min-width: 110px; padding: 7px 8px; }
+.sub-tabs {
+  margin-top: 4px;
+}
 .tab {
   border: 0;
   border-bottom: 3px solid transparent;
@@ -449,6 +452,53 @@ dialog .section { padding: 22px; }
   padding: 7px 8px;
   resize: vertical;
 }
+.inline-select {
+  min-width: 140px;
+  padding: 7px 8px;
+}
+.device-systems-table {
+  min-width: 1500px;
+}
+.compact-text,
+.note-preview {
+  max-width: 220px;
+  white-space: normal;
+  color: var(--ink);
+}
+.note-preview {
+  font-size: 12px;
+}
+.notification-host {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  gap: 10px;
+  z-index: 20;
+  width: min(380px, calc(100vw - 36px));
+}
+.prep-notification {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+.prep-notification strong,
+.prep-notification span {
+  display: block;
+}
+.prep-notification span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
 .bulk-table td:nth-child(1) {
   width: 42px;
   color: var(--muted);
@@ -514,12 +564,6 @@ dialog .section { padding: 22px; }
 .button-field {
   justify-content: end;
 }
-.queue-control {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
 .bulk-delete-bar,
 .report-actions {
   display: flex;
@@ -530,12 +574,6 @@ dialog .section { padding: 22px; }
 }
 .bulk-select {
   width: auto;
-}
-.queue-panel {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 14px;
-  margin: 12px 0 14px;
 }
 .profile-grid {
   display: grid;

@@ -418,13 +418,14 @@ create or replace function public.list_device_coordinators()
 returns table (
   id uuid,
   first_name text,
-  last_name text
+  last_name text,
+  trained_devices jsonb
 )
 language sql
 security definer
 set search_path = ''
 as $$
-  select app_users.id, app_users.first_name, app_users.last_name
+  select app_users.id, app_users.first_name, app_users.last_name, app_users.trained_devices
   from public.app_users
   where app_users.role = 'Device Coordinator'
     and app_users.is_active = true
