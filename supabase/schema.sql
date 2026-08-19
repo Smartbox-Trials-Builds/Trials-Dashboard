@@ -854,6 +854,12 @@ on public.app_eod_cleanups for insert
 to anon, authenticated
 with check (true);
 
+drop policy if exists "Team can delete eod cleanups" on public.app_eod_cleanups;
+create policy "Team can delete eod cleanups"
+on public.app_eod_cleanups for delete
+to anon, authenticated
+using (true);
+
 drop policy if exists "Team can read coordinator queue" on public.coordinator_auto_queue;
 create policy "Team can read coordinator queue"
 on public.coordinator_auto_queue for select
@@ -878,7 +884,7 @@ grant select, insert, update, delete on public.gipod_codes to anon, authenticate
 revoke all on public.app_users from anon, authenticated;
 grant select, insert on public.app_user_activity to anon, authenticated;
 grant select, insert on public.app_shipment_activity to anon, authenticated;
-grant select, insert on public.app_eod_cleanups to anon, authenticated;
+grant select, insert, delete on public.app_eod_cleanups to anon, authenticated;
 grant select, insert, delete on public.coordinator_auto_queue to anon, authenticated;
 grant execute on function public.claim_next_gipod_code(uuid, text) to anon, authenticated;
 grant execute on function public.register_app_user(text, text, text) to anon, authenticated;

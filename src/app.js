@@ -38,6 +38,7 @@ let view = 'dashboard';
 let prepTab = 'files';
 let leadTab = 'schedules';
 let prepperFilter = 'All';
+let selectedFileIds = new Set();
 let bulkLinks = [];
 let connectionState = 'Connecting';
 let theme = localStorage.getItem('theme') || 'light';
@@ -291,6 +292,7 @@ function renderShell() {
             <div><h3>Device Systems Dashboard</h3><p class="muted">Claim files, prepare devices, and manage the shared GIPOD code inventory.</p></div>
             <div class="actions">
               <button id="bulkFilesButton" class="btn" type="button">+ Bulk add files</button>
+              <button id="bulkDeleteFilesButton" class="btn danger" type="button" disabled>Delete selected (0)</button>
               <button id="bulkCodesButton" class="btn hide" type="button">+ Bulk import codes</button>
             </div>
           </div>
@@ -303,7 +305,7 @@ function renderShell() {
           <div id="prepFilesPanel">
             <div class="tabs assignment-tabs" id="prepperTabs" aria-label="Filter files by specialist"></div>
             <div class="table-wrap">
-              <table class="table"><thead><tr><th>Client</th><th>CRM #</th><th>Device</th><th>Vocabulary requested</th><th>GIPOD</th><th>Loan</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
+              <table class="table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Vocabulary requested</th><th>GIPOD</th><th>Loan</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
             </div>
           </div>
           <div id="prepCodesPanel" class="table-wrap hide">
@@ -363,6 +365,7 @@ function renderShell() {
   if ($('leadCleanupButton')) $('leadCleanupButton').addEventListener('click', endOfDayCleanup);
   $('search').addEventListener('input', renderCurrentView);
   $('bulkFilesButton').addEventListener('click', showBulkModal);
+  $('bulkDeleteFilesButton').addEventListener('click', bulkDeleteFiles);
   $('bulkCodesButton').addEventListener('click', showCodeModal);
   $('tab-files').addEventListener('click', () => setPrepTab('files'));
   $('tab-queue').addEventListener('click', () => setPrepTab('queue'));
@@ -1033,7 +1036,7 @@ function objectTotalsTable(title, totals) {
 function renderLeadCleanups() {
   return `<div class="profile-grid">${eodCleanups.map((cleanup) => `
     <section class="profile-panel">
-      <div class="preprep-head"><div><h3>${esc(cleanup.cleanup_date)}</h3><div class="muted">${cleanup.file_count || 0} shipped file${cleanup.file_count === 1 ? '' : 's'} cleaned up</div></div></div>
+      <div class="preprep-head"><div><h3>${esc(cleanup.cleanup_date)}</h3><div class="muted">${cleanup.file_count || 0} shipped file${cleanup.file_count === 1 ? '' : 's'} cleaned up</div></div><button class="btn small danger" data-action="delete-cleanup" data-id="${cleanup.id}" type="button">Delete report</button></div>
       <div class="cleanup-grid">
         ${objectTotalsTable('Loan types', cleanup.loan_totals)}
         ${objectTotalsTable('Device types', cleanup.device_totals)}
@@ -1178,6 +1181,8 @@ function renderPrePrep() {
   if ($('automatedQueuePanel')) $('automatedQueuePanel').innerHTML = renderAutomatedQueuePanel();
   const allRows = stableFileOrder(filteredFiles().filter(isPrePrep));
   const rows = prepperFilter === 'All' ? allRows : allRows.filter((file) => file.prepper === prepperFilter);
+  const existingIds = new Set(files.filter(isPrePrep).map((file) => file.id));
+  selectedFileIds = new Set([...selectedFileIds].filter((id) => existingIds.has(id)));
   const tabs = ['All', ...specialistNames()];
   if (prepperFilter !== 'All' && !tabs.includes(prepperFilter)) prepperFilter = 'All';
   $('prepperTabs').innerHTML = tabs.map((name) => `<button class="tab ${prepperFilter === name ? 'active' : ''}" data-action="prepper-filter" data-name="${esc(name)}">${esc(name)} <span class="count">${name === 'All' ? allRows.length : allRows.filter((file) => file.prepper === name).length}</span></button>`).join('');
@@ -1191,8 +1196,15 @@ function renderPrePrep() {
       : currentUser?.role === 'Device Systems Specialist'
         ? `<button class="btn small secondary" data-action="claim-file" data-id="${file.id}">Claim</button>`
         : '<span class="muted">Unclaimed</span>';
-    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(file.date || 'none')}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
-  }).join('') || '<tr><td colspan="10"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
+    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(file.date || 'none')}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
+  }).join('') || '<tr><td colspan="11"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
+  const visibleIds = rows.map((file) => file.id);
+  const selectAll = $('selectAllFiles');
+  selectAll.checked = visibleIds.length > 0 && visibleIds.every((id) => selectedFileIds.has(id));
+  selectAll.indeterminate = visibleIds.some((id) => selectedFileIds.has(id)) && !selectAll.checked;
+  const bulkDeleteButton = $('bulkDeleteFilesButton');
+  bulkDeleteButton.textContent = `Delete selected (${selectedFileIds.size})`;
+  bulkDeleteButton.disabled = selectedFileIds.size === 0;
   $('gipodRows').innerHTML = gipodCodes.map((item) => {
     const missingDuplicateNote = duplicateCrmNeedsNote(item);
     return `<tr class="${missingDuplicateNote ? 'duplicate-crm' : ''}"><td><b>${esc(item.code)}</b></td><td><span class="pill ${item.usedOn ? 'prep' : 'ready'}">${item.usedOn ? 'Used' : 'Available'}</span></td><td>${esc(item.usedOn || 'none')}${missingDuplicateNote ? '<span class="duplicate-warning">Duplicate CRM - add one note</span>' : ''}</td><td><textarea class="note-input" data-code-note="${item.id}" aria-label="GIPOD note for ${esc(item.code)}">${esc(item.note || '')}</textarea></td><td><div class="actions"><button class="btn small secondary" data-action="save-code-note" data-id="${item.id}" type="button">Save note</button><button class="btn small ${item.usedOn ? 'secondary' : ''}" data-action="use-code" data-id="${item.id}" type="button">${item.usedOn ? 'Edit usage' : 'Use code'}</button></div></td></tr>`;
@@ -1232,6 +1244,7 @@ function render() {
   $('automatedQueuePanel').classList.toggle('hide', prepTab !== 'queue');
   $('prepCodesPanel').classList.toggle('hide', prepTab !== 'codes');
   $('bulkFilesButton').classList.toggle('hide', prepTab !== 'files');
+  $('bulkDeleteFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkCodesButton').classList.toggle('hide', prepTab !== 'codes');
   ['schedules', 'shipped', 'training', 'queue', 'current', 'weekly', 'totals'].forEach((tab) => {
     const tabElement = $(`lead-tab-${tab}`);
@@ -1980,6 +1993,25 @@ async function deleteFile(id) {
   await loadData();
 }
 
+async function bulkDeleteFiles() {
+  const ids = [...selectedFileIds].filter((id) => files.some((file) => file.id === id && isPrePrep(file)));
+  if (!ids.length || !canEditFiles()) return;
+  if (!confirm(`Delete ${ids.length} selected file${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+  const { error } = await supabase.from('trial_files').delete().in('id', ids);
+  if (error) return showError(error);
+  selectedFileIds.clear();
+  await loadData();
+}
+
+async function deleteCleanup(id) {
+  if (!canManageUsers()) return;
+  const cleanup = eodCleanups.find((item) => item.id === id);
+  if (!cleanup || !confirm(`Delete the end-of-day cleanup report for ${cleanup.cleanup_date}? This cannot be undone.`)) return;
+  const { error } = await supabase.from('app_eod_cleanups').delete().eq('id', id);
+  if (error) return showError(error);
+  await loadData();
+}
+
 function showError(error) {
   console.error(error);
   setConnection('Error', error.message || 'Supabase error');
@@ -1991,10 +2023,11 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note'].includes(action)) event.stopPropagation();
+  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'select-file', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
+  if (action === 'delete-cleanup') await deleteCleanup(id);
   if (action === 'prepper-filter') setPrepperFilter(target.dataset.name);
   if (action === 'use-code') showManualGipodModal(id);
   if (action === 'claim-gipod') await claimNextGipodCode(id);
@@ -2012,6 +2045,18 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  if (event.target.dataset.action === 'select-file') {
+    if (event.target.checked) selectedFileIds.add(event.target.dataset.id);
+    else selectedFileIds.delete(event.target.dataset.id);
+    renderPrePrep();
+  }
+  if (event.target.id === 'selectAllFiles') {
+    const visibleIds = stableFileOrder(filteredFiles().filter(isPrePrep))
+      .filter((file) => prepperFilter === 'All' || file.prepper === prepperFilter)
+      .map((file) => file.id);
+    visibleIds.forEach((id) => event.target.checked ? selectedFileIds.add(id) : selectedFileIds.delete(id));
+    renderPrePrep();
+  }
   if (event.target.dataset.action === 'update-user-role') {
     await updateUserRole(event.target.dataset.id, event.target.value);
   }
