@@ -871,7 +871,6 @@ function renderLanes(target, list, names = laneNames) {
 
 function renderDashboard() {
   renderLanes('dashboardLanes', filteredFiles().filter((file) => !isPrePrep(file) && !['Complete', 'Shipped'].includes(file.status)));
-  renderAutoQueueControl();
 }
 
 function renderShipping() {
@@ -1269,12 +1268,12 @@ function renderPrePrep() {
 
 function renderCurrentView() {
   renderStats();
-  renderLeadDashboard();
-  renderDashboard();
-  renderPrePrep();
-  renderShipping();
-  renderUsers();
-  renderProfile();
+  if (view === 'leadDashboard') renderLeadDashboard();
+  if (view === 'dashboard') renderDashboard();
+  if (view === 'preprep') renderPrePrep();
+  if (view === 'shipping') renderShipping();
+  if (view === 'users') renderUsers();
+  if (view === 'profile') renderProfile();
 }
 
 function render() {
@@ -1301,7 +1300,7 @@ function render() {
   $('bulkFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkDeleteFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkCodesButton').classList.toggle('hide', prepTab !== 'codes');
-  ['schedules', 'shipped', 'training', 'queue', 'current', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
+  ['schedules', 'shipped', 'training', 'current', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
     const tabElement = $(`lead-tab-${tab}`);
     if (tabElement) tabElement.classList.toggle('active', leadTab === tab);
   });
