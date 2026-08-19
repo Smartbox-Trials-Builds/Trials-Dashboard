@@ -81,6 +81,9 @@ create table if not exists public.app_users (
   pin_hash text not null,
   pin_lookup text not null unique,
   is_active boolean not null default true,
+  is_logged_in boolean not null default false,
+  last_login_at timestamptz,
+  last_logout_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -217,12 +220,14 @@ begin
     raise exception 'PIN must be exactly 4 digits.';
   end if;
 
-  insert into public.app_users (first_name, last_name, pin_hash, pin_lookup)
+  insert into public.app_users (first_name, last_name, pin_hash, pin_lookup, is_logged_in, last_login_at)
   values (
     initcap(trim(p_first_name)),
     initcap(trim(p_last_name)),
     extensions.crypt(p_pin, extensions.gen_salt('bf')),
-    pg_catalog.encode(extensions.digest(p_pin, 'sha256'), 'hex')
+    pg_catalog.encode(extensions.digest(p_pin, 'sha256'), 'hex'),
+    true,
+    now()
   )
   returning * into created_user;
 
@@ -231,7 +236,8 @@ begin
     'firstName', created_user.first_name,
     'lastName', created_user.last_name,
     'role', created_user.role,
-    'permissions', created_user.permissions
+    'permissions', created_user.permissions,
+    'isLoggedIn', created_user.is_logged_in
   );
 exception
   when unique_violation then
@@ -268,13 +274,35 @@ begin
     return null;
   end if;
 
+  update public.app_users
+  set is_logged_in = true,
+      last_login_at = now()
+  where app_users.id = matched_user.id
+  returning * into matched_user;
+
   return jsonb_build_object(
     'id', matched_user.id,
     'firstName', matched_user.first_name,
     'lastName', matched_user.last_name,
     'role', matched_user.role,
-    'permissions', matched_user.permissions
+    'permissions', matched_user.permissions,
+    'isLoggedIn', matched_user.is_logged_in
   );
+end;
+$$;
+
+create or replace function public.set_app_user_login_status(p_user_id uuid, p_logged_in boolean)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.app_users
+  set is_logged_in = p_logged_in,
+      last_login_at = case when p_logged_in then now() else last_login_at end,
+      last_logout_at = case when p_logged_in then last_logout_at else now() end
+  where app_users.id = p_user_id;
 end;
 $$;
 
@@ -289,6 +317,9 @@ returns table (
   weekly_schedule jsonb,
   trained_devices jsonb,
   is_active boolean,
+  is_logged_in boolean,
+  last_login_at timestamptz,
+  last_logout_at timestamptz,
   created_at timestamptz,
   updated_at timestamptz
 )
@@ -317,6 +348,9 @@ begin
     app_users.weekly_schedule,
     app_users.trained_devices,
     app_users.is_active,
+    app_users.is_logged_in,
+    app_users.last_login_at,
+    app_users.last_logout_at,
     app_users.created_at,
     app_users.updated_at
   from public.app_users
@@ -925,6 +959,7 @@ grant select, insert, delete on public.coordinator_auto_queue to anon, authentic
 grant execute on function public.claim_next_gipod_code(uuid, text, date) to anon, authenticated;
 grant execute on function public.register_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.login_app_user(text, text, text) to anon, authenticated;
+grant execute on function public.set_app_user_login_status(uuid, boolean) to anon, authenticated;
 grant execute on function public.list_app_users(uuid) to anon, authenticated;
 grant execute on function public.create_app_user(uuid, text, text, text, text) to anon, authenticated;
 grant execute on function public.delete_app_user(uuid, uuid) to anon, authenticated;

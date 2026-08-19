@@ -42,6 +42,7 @@ let prepperFilter = 'All';
 let selectedFileIds = new Set();
 let activePrepNotifications = new Map();
 let seenPrepNotifications = new Set();
+let suppressExistingPrepNotifications = false;
 let bulkLinks = [];
 let connectionState = 'Connecting';
 let theme = localStorage.getItem('theme') || 'light';
@@ -49,6 +50,7 @@ let authMode = 'login';
 let currentUser = null;
 let adminViewRole = '';
 let realtimeChannel = null;
+let presencePollTimer = null;
 let updateState = {
   status: 'idle',
   message: 'Ready to check for updates.',
@@ -539,13 +541,42 @@ async function submitAuth(event) {
     localStorage.removeItem('rememberedAppUser');
   }
   persistCurrentUser(data);
+  suppressExistingPrepNotifications = true;
   adminViewRole = '';
   view = firstAllowedView();
   await startApp();
 }
 
-function logout() {
+async function markCurrentUserLoggedIn(isLoggedIn, keepalive = false) {
+  if (!currentUser?.id || !SUPABASE_URL || !SUPABASE_KEY) return;
+  const payload = { p_user_id: currentUser.id, p_logged_in: isLoggedIn };
+  if (keepalive && window.fetch) {
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/set_app_user_login_status`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+      keepalive: true
+    }).catch(() => {});
+    return;
+  }
+  const { error } = await supabase.rpc('set_app_user_login_status', payload);
+  if (error) console.error('Unable to update login status:', error);
+}
+
+async function logout() {
+  await markCurrentUserLoggedIn(false);
   unsubscribeRealtime();
+  stopPresencePolling();
+  activePrepNotifications.forEach((entry) => {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.element?.remove();
+  });
+  activePrepNotifications.clear();
+  seenPrepNotifications.clear();
   persistCurrentUser(null);
   adminViewRole = '';
   view = 'dashboard';
@@ -709,7 +740,10 @@ function rowToUser(row) {
     permissions: row.permissions || {},
     weeklySchedule: row.weekly_schedule || {},
     trainedDevices: row.trained_devices || [],
-    isActive: row.is_active
+    isActive: row.is_active,
+    isLoggedIn: row.is_logged_in,
+    lastLoginAt: row.last_login_at || '',
+    lastLogoutAt: row.last_logout_at || ''
   };
 }
 
@@ -764,6 +798,20 @@ function unsubscribeRealtime() {
   if (!supabase || !realtimeChannel) return;
   supabase.removeChannel(realtimeChannel);
   realtimeChannel = null;
+}
+
+function startPresencePolling() {
+  stopPresencePolling();
+  if (!canManageUsers()) return;
+  presencePollTimer = window.setInterval(() => {
+    loadUsers(true);
+  }, 10000);
+}
+
+function stopPresencePolling() {
+  if (!presencePollTimer) return;
+  clearInterval(presencePollTimer);
+  presencePollTimer = null;
 }
 
 function statusClass(file) {
@@ -939,7 +987,7 @@ function renderUsers() {
         </div>
       </td>
       <td><span class="muted">${Object.keys(user.permissions || {}).length ? esc(JSON.stringify(user.permissions)) : 'Permissions coming later'}</span></td>
-      <td><span class="pill ${user.isActive ? 'ready' : 'open'}">${user.isActive ? 'Active' : 'Inactive'}</span></td>
+      <td><span class="pill ${user.isLoggedIn ? 'ready' : 'offline'}">${user.isLoggedIn ? 'Logged in' : 'Logged off'}</span></td>
       <td><div class="actions">${hasUserProfile(user) ? `<button class="btn small secondary" data-action="open-profile" data-id="${user.id}" type="button">Profile</button>` : ''}<button class="btn small danger" data-action="delete-user" data-id="${user.id}" type="button" ${user.id === currentUser.id ? 'disabled' : ''}>Remove</button></div></td>
     </tr>
   `).join('') || '<tr><td colspan="6"><div class="empty">No users have signed up yet.</div></td></tr>';
@@ -1021,9 +1069,14 @@ function queuePrepReadyNotifications() {
   [...activePrepNotifications.keys()].forEach((fileId) => {
     if (!openReadyIds.has(fileId)) dismissPrepNotification(fileId);
   });
-  stableFileOrder(files)
-    .filter((file) => file.status === 'Ready for Prep' && isTrainedForFile(coordinator, file))
-    .forEach(showPrepNotification);
+  const eligibleFiles = stableFileOrder(files)
+    .filter((file) => file.status === 'Ready for Prep' && isTrainedForFile(coordinator, file));
+  if (suppressExistingPrepNotifications) {
+    eligibleFiles.forEach((file) => seenPrepNotifications.add(file.id));
+    suppressExistingPrepNotifications = false;
+    return;
+  }
+  eligibleFiles.forEach(showPrepNotification);
 }
 
 async function claimPrepFromNotification(id) {
@@ -1753,6 +1806,12 @@ async function updateFile(id, patch, reload = true) {
   if (reload) await loadData();
 }
 
+async function saveDeviceNumber(id, value) {
+  const current = files.find((item) => item.id === id);
+  if (!current || (current.deviceNumber || '') === value) return;
+  await updateFile(id, { deviceNumber: value });
+}
+
 async function updateGipod(id, patch, reload = true) {
   const current = gipodCodes.find((item) => item.id === id);
   const usedOn = patch.usedOn ?? current.usedOn ?? '';
@@ -2231,6 +2290,18 @@ document.addEventListener('click', async (event) => {
   if (action === 'close-dialog') target.closest('dialog')?.close();
 });
 
+document.addEventListener('keydown', async (event) => {
+  if (event.target.dataset.action !== 'update-device-number' || event.key !== 'Enter') return;
+  event.preventDefault();
+  event.target.blur();
+});
+
+document.addEventListener('focusout', async (event) => {
+  if (event.target.dataset.action === 'update-device-number') {
+    await saveDeviceNumber(event.target.dataset.id, event.target.value.trim());
+  }
+});
+
 document.addEventListener('change', async (event) => {
   if (event.target.dataset.action === 'select-file') {
     if (event.target.checked) selectedFileIds.add(event.target.dataset.id);
@@ -2255,6 +2326,14 @@ document.addEventListener('change', async (event) => {
   }
 });
 
+window.addEventListener('pagehide', () => {
+  markCurrentUserLoggedIn(false, true);
+});
+
+window.addEventListener('beforeunload', () => {
+  markCurrentUserLoggedIn(false, true);
+});
+
 async function boot() {
   localStorage.removeItem('currentAppUser');
   if (!SUPABASE_URL || !SUPABASE_KEY || SUPABASE_KEY.includes('replace-with')) {
@@ -2274,6 +2353,7 @@ async function startApp() {
   try {
     await loadData();
     subscribeRealtime();
+    startPresencePolling();
   } catch (error) {
     showError(error);
   }

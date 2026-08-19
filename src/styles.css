@@ -266,6 +266,7 @@ input:focus, select:focus, textarea:focus {
 .qa { background: #fff0d5; color: #875005; }
 .prep { background: #eee7ff; color: #5530a9; }
 .open { background: #e3f2ff; color: #145c8d; }
+.offline { background: #ffe5e5; color: #9d2020; }
 .btn {
   border: 0;
   border-radius: 8px;
