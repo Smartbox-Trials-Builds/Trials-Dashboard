@@ -17,6 +17,7 @@ $electronBuilder = Join-Path $root 'node_modules\.bin\electron-builder.cmd'
 $updateUrl = if ($env:TRIALS_UPDATE_URL) { $env:TRIALS_UPDATE_URL } else { 'https://example.com/trials-dashboard-updates' }
 $githubOwner = if ($env:TRIALS_GITHUB_OWNER) { $env:TRIALS_GITHUB_OWNER } else { 'Smartbox-Trials-Builds' }
 $githubRepo = if ($env:TRIALS_GITHUB_REPO) { $env:TRIALS_GITHUB_REPO } else { 'Trials-Dashboard' }
+$appVersion = ((Get-Content -Raw -LiteralPath (Join-Path $root 'package.json')) | ConvertFrom-Json).version
 $publishConfig = if ($githubOwner -and $githubRepo) {
   @{
     provider = 'github'
@@ -89,7 +90,7 @@ exit /b 0
 
 $stagePackage = @{
   name = 'trials-operations-dashboard'
-  version = '1.0.0'
+  version = $appVersion
   description = 'Windows desktop trials operations dashboard backed by Supabase Realtime.'
   main = 'electron/main.cjs'
   dependencies = @{}
@@ -141,4 +142,26 @@ try {
 }
 finally {
   Pop-Location
+}
+
+$releaseInstallerName = "Trials-Operations-Dashboard-Setup-$appVersion.exe"
+$defaultInstallerName = "Trials Operations Dashboard Setup $appVersion.exe"
+$defaultInstaller = Join-Path $output $defaultInstallerName
+$releaseInstaller = Join-Path $output $releaseInstallerName
+$defaultBlockmap = "$defaultInstaller.blockmap"
+$releaseBlockmap = "$releaseInstaller.blockmap"
+
+if (Test-Path -LiteralPath $defaultInstaller) {
+  Move-Item -LiteralPath $defaultInstaller -Destination $releaseInstaller -Force
+}
+
+if (Test-Path -LiteralPath $defaultBlockmap) {
+  Move-Item -LiteralPath $defaultBlockmap -Destination $releaseBlockmap -Force
+}
+
+$latestPath = Join-Path $output 'latest.yml'
+if (Test-Path -LiteralPath $latestPath) {
+  $latest = Get-Content -Raw -LiteralPath $latestPath
+  $latest = $latest.Replace($defaultInstallerName, $releaseInstallerName)
+  [System.IO.File]::WriteAllText($latestPath, $latest, [System.Text.UTF8Encoding]::new($false))
 }
