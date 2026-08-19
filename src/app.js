@@ -1047,6 +1047,13 @@ function renderLeadCleanups() {
   `).join('') || '<div class="empty">No end-of-day cleanups have been logged.</div>'}</div>`;
 }
 
+function renderLeadReportActions() {
+  const reportCount = shipmentHistory.length + eodCleanups.length;
+  return canManageUsers()
+    ? `<div class="report-actions"><button class="btn danger" data-action="delete-lead-reports" type="button" ${reportCount ? '' : 'disabled'}>Delete all lead reports</button><span class="muted">${reportCount} saved report record${reportCount === 1 ? '' : 's'}</span></div>`
+    : '';
+}
+
 function renderLeadDashboard() {
   if (!$('leadDashboardBody')) return;
   const renderers = {
@@ -1059,7 +1066,10 @@ function renderLeadDashboard() {
     totals: renderLeadShipmentTotals,
     cleanups: renderLeadCleanups
   };
-  $('leadDashboardBody').innerHTML = (renderers[leadTab] || renderLeadSchedules)();
+  $('leadDashboardBody').innerHTML = `
+    ${renderLeadReportActions()}
+    ${(renderers[leadTab] || renderLeadSchedules)()}
+  `;
 }
 
 function userInitials(user = profileUser) {
@@ -1246,7 +1256,7 @@ function render() {
   $('bulkFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkDeleteFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkCodesButton').classList.toggle('hide', prepTab !== 'codes');
-  ['schedules', 'shipped', 'training', 'queue', 'current', 'weekly', 'totals'].forEach((tab) => {
+  ['schedules', 'shipped', 'training', 'queue', 'current', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
     const tabElement = $(`lead-tab-${tab}`);
     if (tabElement) tabElement.classList.toggle('active', leadTab === tab);
   });
@@ -2012,6 +2022,23 @@ async function deleteCleanup(id) {
   await loadData();
 }
 
+async function deleteLeadReports() {
+  if (!canManageUsers()) {
+    alert('Only Admin and Lead users can delete lead reports.');
+    return;
+  }
+  const reportCount = shipmentHistory.length + eodCleanups.length;
+  if (!reportCount) return;
+  if (!confirm(`Delete all Lead Dashboard reports? This will remove ${shipmentHistory.length} shipped file report${shipmentHistory.length === 1 ? '' : 's'} and ${eodCleanups.length} end-of-day cleanup report${eodCleanups.length === 1 ? '' : 's'}. This cannot be undone.`)) return;
+  const { error: shipmentError } = await supabase.from('app_shipment_activity').delete().not('id', 'is', null);
+  if (shipmentError) return showError(shipmentError);
+  const { error: cleanupError } = await supabase.from('app_eod_cleanups').delete().not('id', 'is', null);
+  if (cleanupError) return showError(cleanupError);
+  shipmentHistory = [];
+  eodCleanups = [];
+  await loadData();
+}
+
 function showError(error) {
   console.error(error);
   setConnection('Error', error.message || 'Supabase error');
@@ -2023,11 +2050,12 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'select-file', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note'].includes(action)) event.stopPropagation();
+  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'select-file', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
   if (action === 'delete-cleanup') await deleteCleanup(id);
+  if (action === 'delete-lead-reports') await deleteLeadReports();
   if (action === 'prepper-filter') setPrepperFilter(target.dataset.name);
   if (action === 'use-code') showManualGipodModal(id);
   if (action === 'claim-gipod') await claimNextGipodCode(id);

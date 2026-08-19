@@ -520,6 +520,17 @@ dialog .section { padding: 22px; }
   gap: 10px;
   flex-wrap: wrap;
 }
+.bulk-delete-bar,
+.report-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 12px;
+}
+.bulk-select {
+  width: auto;
+}
 .queue-panel {
   border: 1px solid var(--line);
   border-radius: 8px;
