@@ -1,0 +1,38 @@
+{
+  "name": "trials-operations-dashboard",
+  "version": "1.0.0",
+  "description": "Windows desktop trials operations dashboard backed by Supabase Realtime.",
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "electron": "electron .",
+    "start": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "clean": "powershell -ExecutionPolicy Bypass -File scripts/clean-package-output.ps1",
+    "build": "vite build --base=./",
+    "dist": "powershell -ExecutionPolicy Bypass -File scripts/package-win.ps1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "vite": "^7.0.6",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.trials.operations.dashboard",
+    "productName": "Trials Operations Dashboard",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "app-release"
+    }
+  }
+}
