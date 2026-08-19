@@ -318,7 +318,7 @@ function renderShell() {
           <div id="prepFilesPanel">
             <div class="tabs assignment-tabs" id="prepperTabs" aria-label="Filter files by specialist"></div>
             <div class="table-wrap">
-              <table class="table device-systems-table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Vocabulary requested</th><th>GIPOD</th><th>Loan</th><th>Lane</th><th>Accessories</th><th>Notes</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
+              <table class="table device-systems-table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Device #</th><th>Vocabulary requested</th><th>GIPOD</th><th>Loan</th><th>Lane</th><th>Accessories</th><th>Notes</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
             </div>
           </div>
           <div id="prepCodesPanel" class="table-wrap hide">
@@ -901,7 +901,6 @@ function fileCard(file, name) {
     <div class="file-card-details">
       <div><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
       <div><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
-      <div><span>Notes</span><b>${esc(file.notes || 'none')}</b></div>
     </div>
     ${prepQaLog(file)}${workflowButtons(file)}${actionButtons(file)}
   </article>`;
@@ -995,14 +994,20 @@ function dismissPrepNotification(fileId) {
 function showPrepNotification(file) {
   if (activePrepNotifications.has(file.id) || seenPrepNotifications.has(file.id)) return;
   seenPrepNotifications.add(file.id);
+  const accessories = fileAccessories(file);
   const toast = document.createElement('div');
   toast.className = 'prep-notification';
   toast.innerHTML = `
-    <div>
+    <div class="prep-notification-body">
       <strong>Prep ready: ${esc(file.last)}, ${esc(file.first)}</strong>
-      <span>${esc(file.device || 'Device not listed')} ${file.expires ? `- ship by ${esc(formatDate(file.expires))}` : ''}</span>
+      <span>${esc(file.device || 'Device not listed')}</span>
+      <div class="file-meta">${esc(file.loan || 'No loan type')} - Ship by ${esc(formatDate(file.expires))}</div>
+      <div class="file-card-details">
+        <div><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
+        <div><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
+      </div>
     </div>
-    <button class="btn small" data-action="claim-prep-notification" data-id="${file.id}" type="button">Claim</button>
+    <button class="btn" data-action="claim-prep-notification" data-id="${file.id}" type="button">Claim</button>
   `;
   notificationHost().appendChild(toast);
   const timer = setTimeout(() => dismissPrepNotification(file.id), 10000);
@@ -1121,15 +1126,18 @@ function objectTotalsTable(title, totals) {
 
 function renderLeadCleanups() {
   return `<div class="profile-grid">${eodCleanups.map((cleanup) => `
-    <section class="profile-panel">
-      <div class="preprep-head"><div><h3>${esc(formatDate(cleanup.cleanup_date))}</h3><div class="muted">${cleanup.file_count || 0} shipped file${cleanup.file_count === 1 ? '' : 's'} cleaned up</div></div><button class="btn small danger" data-action="delete-cleanup" data-id="${cleanup.id}" type="button">Delete report</button></div>
-      <div class="cleanup-grid">
-        ${objectTotalsTable('Loan types', cleanup.loan_totals)}
-        ${objectTotalsTable('Device types', cleanup.device_totals)}
-        ${objectTotalsTable('Accessory types', cleanup.accessory_totals)}
+    <details class="profile-panel cleanup-report">
+      <summary><div><h3>${esc(formatDate(cleanup.cleanup_date))}</h3><div class="muted">${cleanup.file_count || 0} shipped file${cleanup.file_count === 1 ? '' : 's'} cleaned up</div></div><span class="muted">Open report</span></summary>
+      <div class="cleanup-report-body">
+        <div class="footer"><button class="btn small danger" data-action="delete-cleanup" data-id="${cleanup.id}" type="button">Delete report</button></div>
+        <div class="cleanup-grid">
+          ${objectTotalsTable('Loan types', cleanup.loan_totals)}
+          ${objectTotalsTable('Device types', cleanup.device_totals)}
+          ${objectTotalsTable('Accessory types', cleanup.accessory_totals)}
+        </div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Client</th><th>Device</th><th>Loan</th><th>Accessories</th></tr></thead><tbody>${tableRows((cleanup.files || []).map((file) => `<tr><td>${esc(file.lastName)}, ${esc(file.firstName)}</td><td>${esc(file.device || 'Not listed')}</td><td>${esc(file.loan || 'Not listed')}</td><td>${(file.accessories || []).map(esc).join(', ') || 'None listed'}</td></tr>`), 'No file details logged.', 4)}</tbody></table></div>
       </div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>Client</th><th>Device</th><th>Loan</th><th>Accessories</th></tr></thead><tbody>${tableRows((cleanup.files || []).map((file) => `<tr><td>${esc(file.lastName)}, ${esc(file.firstName)}</td><td>${esc(file.device || 'Not listed')}</td><td>${esc(file.loan || 'Not listed')}</td><td>${(file.accessories || []).map(esc).join(', ') || 'None listed'}</td></tr>`), 'No file details logged.', 4)}</tbody></table></div>
-    </section>
+    </details>
   `).join('') || '<div class="empty">No end-of-day cleanups have been logged.</div>'}</div>`;
 }
 
@@ -1293,8 +1301,11 @@ function renderPrePrep() {
         : '<span class="muted">Unclaimed</span>';
     const accessories = fileAccessories(file);
     const laneSelect = `<select class="inline-select" data-action="assign-lane" data-id="${file.id}" aria-label="Lane for ${esc(file.last)}, ${esc(file.first)}">${laneNames.map((lane) => `<option value="${esc(lane)}" ${file.lane === lane ? 'selected' : ''}>${esc(lane)}</option>`).join('')}</select>`;
-    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(formatDate(file.date))}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
-  }).join('') || '<tr><td colspan="14"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
+    const deviceNumberInput = canEditFiles()
+      ? `<input class="inline-text-input" data-action="update-device-number" data-id="${file.id}" value="${esc(file.deviceNumber || '')}" placeholder="Device #">`
+      : esc(file.deviceNumber || 'none');
+    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${deviceNumberInput}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(formatDate(file.date))}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
+  }).join('') || '<tr><td colspan="15"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
   const visibleIds = rows.map((file) => file.id);
   const selectAll = $('selectAllFiles');
   selectAll.checked = visibleIds.length > 0 && visibleIds.every((id) => selectedFileIds.has(id));
@@ -2194,7 +2205,7 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'select-file', 'assign-lane', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file'].includes(action)) event.stopPropagation();
+  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
@@ -2238,6 +2249,9 @@ document.addEventListener('change', async (event) => {
   }
   if (event.target.dataset.action === 'assign-lane') {
     await updateFile(event.target.dataset.id, { lane: event.target.value });
+  }
+  if (event.target.dataset.action === 'update-device-number') {
+    await updateFile(event.target.dataset.id, { deviceNumber: event.target.value.trim() });
   }
 });
 

@@ -481,8 +481,12 @@ dialog .section { padding: 22px; }
   min-width: 140px;
   padding: 7px 8px;
 }
+.inline-text-input {
+  width: 120px;
+  padding: 7px 8px;
+}
 .device-systems-table {
-  min-width: 1500px;
+  min-width: 1620px;
 }
 .compact-text,
 .note-preview {
@@ -495,25 +499,34 @@ dialog .section { padding: 22px; }
 }
 .notification-host {
   position: fixed;
-  right: 18px;
-  bottom: 18px;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
   display: grid;
   gap: 10px;
-  z-index: 20;
-  width: min(380px, calc(100vw - 36px));
+  z-index: 40;
+  width: min(620px, calc(100vw - 28px));
 }
 .prep-notification {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px;
+  gap: 18px;
+  padding: 18px;
   border: 1px solid var(--line);
   border-left: 4px solid var(--brand);
   border-radius: 8px;
   background: var(--panel);
   color: var(--ink);
   box-shadow: var(--shadow);
+}
+.prep-notification-body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.prep-notification .file-card-details {
+  margin: 6px 0 0;
 }
 .prep-notification strong,
 .prep-notification span {
@@ -523,6 +536,32 @@ dialog .section { padding: 22px; }
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
+}
+.cleanup-report {
+  padding: 0;
+  overflow: hidden;
+}
+.cleanup-report summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.cleanup-report summary::-webkit-details-marker { display: none; }
+.cleanup-report summary h3 { margin: 0 0 3px; }
+.cleanup-report summary::after {
+  content: '+';
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--brand-dark);
+}
+.cleanup-report[open] summary::after { content: '-'; }
+.cleanup-report-body {
+  border-top: 1px solid var(--line);
+  padding: 0 14px 14px;
 }
 .bulk-table td:nth-child(1) {
   width: 42px;
