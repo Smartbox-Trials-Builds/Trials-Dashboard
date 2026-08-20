@@ -661,6 +661,23 @@ dialog .section { padding: 22px; }
   gap: 7px;
   margin-bottom: 12px;
 }
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.check-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  font-weight: 800;
+}
+.check-card input { width: auto; }
+.new-hire-toggle { margin-bottom: 8px; }
 .notice {
   background: #fff8e7;
   border: 1px solid #f0d390;
@@ -689,6 +706,6 @@ dialog .section { padding: 22px; }
   .stats, .stats.compact { grid-template-columns: 1fr; }
   .toolbar { align-items: flex-start; flex-direction: column; }
   .search { width: 100%; }
-  .form, .auth-form, .camera-fields, .schedule-form, .user-create { grid-template-columns: 1fr; }
+  .form, .auth-form, .camera-fields, .schedule-form, .user-create, .option-grid { grid-template-columns: 1fr; }
   .full { grid-column: auto; }
 }

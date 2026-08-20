@@ -78,6 +78,7 @@ create table if not exists public.app_users (
   permissions jsonb not null default '{}'::jsonb,
   weekly_schedule jsonb not null default '{}'::jsonb,
   trained_devices jsonb not null default '[]'::jsonb,
+  is_new_hire boolean not null default false,
   pin_hash text not null,
   pin_lookup text not null unique,
   is_active boolean not null default true,
@@ -237,6 +238,7 @@ begin
     'lastName', created_user.last_name,
     'role', created_user.role,
     'permissions', created_user.permissions,
+    'isNewHire', created_user.is_new_hire,
     'isLoggedIn', created_user.is_logged_in
   );
 exception
@@ -286,6 +288,7 @@ begin
     'lastName', matched_user.last_name,
     'role', matched_user.role,
     'permissions', matched_user.permissions,
+    'isNewHire', matched_user.is_new_hire,
     'isLoggedIn', matched_user.is_logged_in
   );
 end;
@@ -316,6 +319,7 @@ returns table (
   permissions jsonb,
   weekly_schedule jsonb,
   trained_devices jsonb,
+  is_new_hire boolean,
   is_active boolean,
   is_logged_in boolean,
   last_login_at timestamptz,
@@ -347,6 +351,7 @@ begin
     app_users.permissions,
     app_users.weekly_schedule,
     app_users.trained_devices,
+    app_users.is_new_hire,
     app_users.is_active,
     app_users.is_logged_in,
     app_users.last_login_at,
@@ -410,7 +415,8 @@ begin
     'firstName', created_user.first_name,
     'lastName', created_user.last_name,
     'role', created_user.role,
-    'permissions', created_user.permissions
+    'permissions', created_user.permissions,
+    'isNewHire', created_user.is_new_hire
   );
 exception
   when unique_violation then
@@ -444,18 +450,21 @@ begin
 end;
 $$;
 
+drop function if exists public.list_device_specialists();
 create or replace function public.list_device_specialists()
 returns table (
   id uuid,
   first_name text,
   last_name text,
-  trained_devices jsonb
+  trained_devices jsonb,
+  is_new_hire boolean,
+  is_logged_in boolean
 )
 language sql
 security definer
 set search_path = ''
 as $$
-  select app_users.id, app_users.first_name, app_users.last_name, app_users.trained_devices
+  select app_users.id, app_users.first_name, app_users.last_name, app_users.trained_devices, app_users.is_new_hire, app_users.is_logged_in
   from public.app_users
   where app_users.role = 'Device Systems Specialist'
     and app_users.is_active = true
@@ -468,13 +477,15 @@ returns table (
   id uuid,
   first_name text,
   last_name text,
-  trained_devices jsonb
+  trained_devices jsonb,
+  is_new_hire boolean,
+  is_logged_in boolean
 )
 language sql
 security definer
 set search_path = ''
 as $$
-  select app_users.id, app_users.first_name, app_users.last_name, app_users.trained_devices
+  select app_users.id, app_users.first_name, app_users.last_name, app_users.trained_devices, app_users.is_new_hire, app_users.is_logged_in
   from public.app_users
   where app_users.role = 'Device Coordinator'
     and app_users.is_active = true
@@ -516,7 +527,8 @@ begin
     'role', target_user.role,
     'permissions', target_user.permissions,
     'weeklySchedule', target_user.weekly_schedule,
-    'trainedDevices', target_user.trained_devices
+    'trainedDevices', target_user.trained_devices,
+    'isNewHire', target_user.is_new_hire
   );
 end;
 $$;
@@ -556,7 +568,8 @@ begin
     'role', target_user.role,
     'permissions', target_user.permissions,
     'weeklySchedule', target_user.weekly_schedule,
-    'trainedDevices', target_user.trained_devices
+    'trainedDevices', target_user.trained_devices,
+    'isNewHire', target_user.is_new_hire
   );
 exception
   when unique_violation then
@@ -599,12 +612,14 @@ begin
     'role', target_user.role,
     'permissions', target_user.permissions,
     'weeklySchedule', target_user.weekly_schedule,
-    'trainedDevices', target_user.trained_devices
+    'trainedDevices', target_user.trained_devices,
+    'isNewHire', target_user.is_new_hire
   );
 end;
 $$;
 
-create or replace function public.update_app_user_trained_devices(p_actor_id uuid, p_user_id uuid, p_trained_devices jsonb)
+drop function if exists public.update_app_user_trained_devices(uuid, uuid, jsonb);
+create or replace function public.update_app_user_trained_devices(p_actor_id uuid, p_user_id uuid, p_trained_devices jsonb, p_is_new_hire boolean default false)
 returns jsonb
 language plpgsql
 security definer
@@ -628,7 +643,8 @@ begin
   end if;
 
   update public.app_users
-  set trained_devices = coalesce(p_trained_devices, '[]'::jsonb)
+  set trained_devices = coalesce(p_trained_devices, '[]'::jsonb),
+      is_new_hire = coalesce(p_is_new_hire, false)
   where app_users.id = p_user_id
   returning * into target_user;
 
@@ -643,7 +659,8 @@ begin
     'role', target_user.role,
     'permissions', target_user.permissions,
     'weeklySchedule', target_user.weekly_schedule,
-    'trainedDevices', target_user.trained_devices
+    'trainedDevices', target_user.trained_devices,
+    'isNewHire', target_user.is_new_hire
   );
 end;
 $$;
@@ -968,7 +985,7 @@ grant execute on function public.list_device_coordinators() to anon, authenticat
 grant execute on function public.get_app_user_profile(uuid, uuid) to anon, authenticated;
 grant execute on function public.update_own_app_user_pin(uuid, text, text) to anon, authenticated;
 grant execute on function public.update_app_user_schedule(uuid, uuid, jsonb) to anon, authenticated;
-grant execute on function public.update_app_user_trained_devices(uuid, uuid, jsonb) to anon, authenticated;
+grant execute on function public.update_app_user_trained_devices(uuid, uuid, jsonb, boolean) to anon, authenticated;
 grant execute on function public.list_app_user_activity(uuid, uuid) to anon, authenticated;
 grant execute on function public.list_team_user_activity(uuid) to anon, authenticated;
 grant execute on function public.update_app_user_role(uuid, uuid, text) to anon, authenticated;

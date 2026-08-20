@@ -6,6 +6,8 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || localStorage.getI
 
 const laneNames = ['Expedites', 'Funded Rentals', 'Ship Requested', 'Accessories', 'Daily Queue'];
 const roles = ['Admin', 'Lead', 'Device Coordinator', 'Shipper', 'Device Systems Specialist'];
+const trainedDeviceOptions = ["Wego's", "Talk Pad's", "Grid Pad's", "Zuvo's"];
+const newHireClaimWindowMs = 10000;
 const userManagerRoles = ['Admin', 'Lead'];
 const profileRoles = ['Lead', 'Device Coordinator', 'Device Systems Specialist'];
 const roleViews = {
@@ -51,6 +53,7 @@ let currentUser = null;
 let adminViewRole = '';
 let realtimeChannel = null;
 let presencePollTimer = null;
+let claimWindowTimers = new Map();
 let updateState = {
   status: 'idle',
   message: 'Ready to check for updates.',
@@ -577,6 +580,8 @@ async function logout() {
   });
   activePrepNotifications.clear();
   seenPrepNotifications.clear();
+  claimWindowTimers.forEach((timer) => clearTimeout(timer));
+  claimWindowTimers.clear();
   persistCurrentUser(null);
   adminViewRole = '';
   view = 'dashboard';
@@ -721,7 +726,9 @@ function rowToSpecialist(row) {
     id: row.id,
     firstName: row.first_name,
     lastName: row.last_name,
-    trainedDevices: row.trained_devices || []
+    trainedDevices: row.trained_devices || [],
+    isNewHire: Boolean(row.is_new_hire),
+    isLoggedIn: Boolean(row.is_logged_in)
   };
 }
 
@@ -740,6 +747,7 @@ function rowToUser(row) {
     permissions: row.permissions || {},
     weeklySchedule: row.weekly_schedule || {},
     trainedDevices: row.trained_devices || [],
+    isNewHire: Boolean(row.is_new_hire),
     isActive: row.is_active,
     isLoggedIn: row.is_logged_in,
     lastLoginAt: row.last_login_at || '',
@@ -922,7 +930,7 @@ function workflowButtons(file) {
   const buttons = [];
   const isCoordinator = currentUser?.role === 'Device Coordinator' || effectiveRole() === 'Device Coordinator';
   const coordinator = currentCoordinatorProfile();
-  if (isCoordinator && file.status === 'Ready for Prep' && coordinator && isTrainedForFile(coordinator, file)) {
+  if (isCoordinator && file.status === 'Ready for Prep' && canCoordinatorClaimPrepNow(file, coordinator)) {
     buttons.push(`<button class="btn small card-step" data-action="claim-prep" data-id="${file.id}">Claim prep</button>`);
   }
   if (isCoordinator && file.status === 'Ready for QA') {
@@ -1007,8 +1015,39 @@ function trainedDeviceList(user) {
   return Array.isArray(user?.trainedDevices) ? user.trainedDevices.filter(Boolean) : [];
 }
 
+function isDeviceOptionSelected(user, option) {
+  return trainedDeviceList(user).some((device) => deviceMatchesTraining(device, option));
+}
+
 function isTrainedForFile(user, file) {
   return trainedDeviceList(user).some((device) => deviceMatchesTraining(file.device, device));
+}
+
+function qualifiedNewHiresForFile(file) {
+  return coordinators.filter((user) => user.isNewHire && user.isLoggedIn && isTrainedForFile(user, file));
+}
+
+function claimWindowRemainingMs(file) {
+  if (file.status !== 'Ready for Prep' || !qualifiedNewHiresForFile(file).length) return 0;
+  const start = Date.parse(file.updatedAt || file.createdAt || '');
+  if (Number.isNaN(start)) return 0;
+  return Math.max(0, newHireClaimWindowMs - (Date.now() - start));
+}
+
+function canCoordinatorClaimPrepNow(file, coordinator) {
+  if (!coordinator || !isTrainedForFile(coordinator, file)) return false;
+  if (coordinator.isNewHire) return true;
+  return claimWindowRemainingMs(file) === 0;
+}
+
+function scheduleClaimWindowRefresh(file) {
+  const remaining = claimWindowRemainingMs(file);
+  if (!remaining || claimWindowTimers.has(file.id)) return;
+  claimWindowTimers.set(file.id, window.setTimeout(() => {
+    claimWindowTimers.delete(file.id);
+    render();
+    queuePrepReadyNotifications();
+  }, remaining + 100));
 }
 
 function currentCoordinatorProfile() {
@@ -1017,7 +1056,9 @@ function currentCoordinatorProfile() {
     id: currentUser?.id,
     firstName: currentUser?.firstName,
     lastName: currentUser?.lastName,
-    trainedDevices: []
+    trainedDevices: [],
+    isNewHire: Boolean(currentUser?.isNewHire),
+    isLoggedIn: true
   };
 }
 
@@ -1069,21 +1110,31 @@ function queuePrepReadyNotifications() {
   [...activePrepNotifications.keys()].forEach((fileId) => {
     if (!openReadyIds.has(fileId)) dismissPrepNotification(fileId);
   });
+  [...claimWindowTimers.keys()].forEach((fileId) => {
+    if (!openReadyIds.has(fileId)) {
+      clearTimeout(claimWindowTimers.get(fileId));
+      claimWindowTimers.delete(fileId);
+    }
+  });
   const eligibleFiles = stableFileOrder(files)
-    .filter((file) => file.status === 'Ready for Prep' && isTrainedForFile(coordinator, file));
+    .filter((file) => file.status === 'Ready for Prep' && canCoordinatorClaimPrepNow(file, coordinator));
   if (suppressExistingPrepNotifications) {
     eligibleFiles.forEach((file) => seenPrepNotifications.add(file.id));
     suppressExistingPrepNotifications = false;
     return;
   }
+  stableFileOrder(files)
+    .filter((file) => file.status === 'Ready for Prep')
+    .forEach(scheduleClaimWindowRefresh);
   eligibleFiles.forEach(showPrepNotification);
 }
 
 async function claimPrepFromNotification(id) {
   const file = files.find((item) => item.id === id);
   const coordinator = currentCoordinatorProfile();
-  if (!file || !coordinator || !isTrainedForFile(coordinator, file)) {
+  if (!file || !coordinator || !canCoordinatorClaimPrepNow(file, coordinator)) {
     dismissPrepNotification(id);
+    if (file && coordinator && isTrainedForFile(coordinator, file)) alert('New hires have first claim on this file for a few seconds.');
     return;
   }
   const initials = currentUserInitials();
@@ -1124,7 +1175,7 @@ function renderLeadShipped() {
 }
 
 function renderLeadTraining() {
-  return `<div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Trained devices</th></tr></thead><tbody>${tableRows(users.filter(hasUserProfile).map((user) => `<tr><td>${esc(userFullName(user))}</td><td>${esc(user.role)}</td><td>${trainedDeviceList(user).map(esc).join(', ') || 'No trained devices listed'}</td></tr>`), 'No trained-device profiles found.', 3)}</tbody></table></div>`;
+  return `<div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>New hire</th><th>Trained devices</th></tr></thead><tbody>${tableRows(users.filter(hasUserProfile).map((user) => `<tr><td>${esc(userFullName(user))}</td><td>${esc(user.role)}</td><td>${user.isNewHire ? '<span class="pill prep">Yes</span>' : '<span class="muted">No</span>'}</td><td>${trainedDeviceList(user).map(esc).join(', ') || 'No trained devices listed'}</td></tr>`), 'No trained-device profiles found.', 4)}</tbody></table></div>`;
 }
 
 function currentTaskForUser(user) {
@@ -1312,8 +1363,12 @@ function renderProfile() {
       <section class="profile-panel">
         <h3>Trained Devices</h3>
         <div class="trained-list">${trainedDevices.map((device) => `<span class="pill ready">${esc(device)}</span>`).join('') || '<div class="empty">No trained devices listed.</div>'}</div>
-        <div class="field full"><label for="profileTrainedDevices">Devices trained on</label><textarea id="profileTrainedDevices" placeholder="Talkpads&#10;Grid Pads">${esc(trainedDevices.join('\n'))}</textarea><span class="muted">Enter one device type per line. Prep-ready notifications only show for matching trained devices.</span></div>
-        <div class="footer"><button class="btn" data-action="save-trained-devices" data-id="${profileUser.id}" type="button">Save trained devices</button></div>
+        <div class="option-grid">
+          ${trainedDeviceOptions.map((device) => `<label class="check-card"><input type="checkbox" data-trained-device="${esc(device)}" ${isDeviceOptionSelected(profileUser, device) ? 'checked' : ''}> <span>${esc(device)}</span></label>`).join('')}
+        </div>
+        <label class="check-row new-hire-toggle"><input id="profileNewHire" type="checkbox" ${profileUser.isNewHire ? 'checked' : ''}> New hire</label>
+        <span class="muted">Prep notifications only show for matching trained devices. New hires get the first claim window before the rest of the team.</span>
+        <div class="footer"><button class="btn" data-action="save-trained-devices" data-id="${profileUser.id}" type="button">Save training</button></div>
       </section>
       ${profileUser.id === currentUser.id ? `
       <section class="profile-panel">
@@ -1581,21 +1636,21 @@ async function saveProfileSchedule(userId) {
 
 async function saveTrainedDevices(userId) {
   if (userId !== currentUser.id && !canManageUsers()) return;
-  const trainedDevices = ($('profileTrainedDevices')?.value || '')
-    .split(/\r?\n|,/)
-    .map((item) => item.trim())
+  const trainedDevices = [...document.querySelectorAll('[data-trained-device]:checked')]
+    .map((input) => input.dataset.trainedDevice)
     .filter(Boolean);
   const uniqueDevices = [...new Set(trainedDevices)];
   const { data, error } = await supabase.rpc('update_app_user_trained_devices', {
     p_actor_id: currentUser.id,
     p_user_id: userId,
-    p_trained_devices: uniqueDevices
+    p_trained_devices: uniqueDevices,
+    p_is_new_hire: Boolean($('profileNewHire')?.checked)
   });
   if (error) return showError(error);
   profileUser = data;
-  if (userId === currentUser.id) persistCurrentUser({ ...currentUser, trainedDevices: data.trainedDevices || [] });
+  if (userId === currentUser.id) persistCurrentUser({ ...currentUser, trainedDevices: data.trainedDevices || [], isNewHire: Boolean(data.isNewHire) });
   await loadData();
-  alert('Trained devices saved.');
+  alert('Training saved.');
 }
 
 function laneForLoan(loan, fallback = 'Daily Queue') {
