@@ -53,6 +53,9 @@ let currentUser = null;
 let adminViewRole = '';
 let realtimeChannel = null;
 let presencePollTimer = null;
+let heartbeatTimer = null;
+let reconnectTimer = null;
+let recoveryPromise = null;
 let claimWindowTimers = new Map();
 let updateState = {
   status: 'idle',
@@ -574,6 +577,11 @@ async function logout() {
   await markCurrentUserLoggedIn(false);
   unsubscribeRealtime();
   stopPresencePolling();
+  stopHeartbeat();
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   activePrepNotifications.forEach((entry) => {
     if (entry.timer) clearTimeout(entry.timer);
     entry.element?.remove();
@@ -673,14 +681,92 @@ function setConnection(state, detail = '') {
   text.textContent = state === 'Refreshing' ? (connectionState === 'Connecting' ? 'Live' : connectionState) : connectionState;
 }
 
+function createSupabaseClient() {
+  supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+}
+
+function resultError(result) {
+  if (Array.isArray(result)) return result.find((item) => item?.error)?.error || null;
+  return result?.error || null;
+}
+
+function isRecoverableSupabaseError(error) {
+  const message = `${error?.message || error?.name || error || ''}`.toLowerCase();
+  const status = Number(error?.status || error?.code || 0);
+  return [408, 429, 500, 502, 503, 504].includes(status) ||
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('network') ||
+    message.includes('fetch') ||
+    message.includes('connection') ||
+    message.includes('websocket') ||
+    message.includes('abort');
+}
+
+async function recoverSupabaseConnection(reason = 'Connection recovered') {
+  if (recoveryPromise) return recoveryPromise;
+  recoveryPromise = (async () => {
+    setConnection('Refreshing', 'Reconnecting');
+    unsubscribeRealtime();
+    createSupabaseClient();
+    if (currentUser?.id) await markCurrentUserLoggedIn(true);
+    subscribeRealtime();
+    setConnection('Live', reason);
+  })().finally(() => {
+    recoveryPromise = null;
+  });
+  return recoveryPromise;
+}
+
+async function withSupabaseRetry(operation) {
+  let result;
+  try {
+    result = await operation();
+  } catch (error) {
+    if (!isRecoverableSupabaseError(error)) throw error;
+    await recoverSupabaseConnection(error.message || 'Supabase reconnect');
+    try {
+      return await operation();
+    } catch (retryError) {
+      return { error: retryError };
+    }
+  }
+  const error = resultError(result);
+  if (error && isRecoverableSupabaseError(error)) {
+    await recoverSupabaseConnection(error.message || 'Supabase reconnect');
+    try {
+      return await operation();
+    } catch (retryError) {
+      return { error: retryError };
+    }
+  }
+  return result;
+}
+
+function scheduleRealtimeReconnect(reason) {
+  setConnection('Refreshing', reason);
+  if (reconnectTimer) return;
+  reconnectTimer = window.setTimeout(async () => {
+    reconnectTimer = null;
+    try {
+      await recoverSupabaseConnection(reason);
+      await loadData();
+    } catch (error) {
+      showError(error);
+    }
+  }, 1500);
+}
+
 async function loadData() {
   setConnection(connectionState === 'Live' ? 'Refreshing' : 'Connecting', connectionState === 'Live' ? 'Live' : 'Loading queue');
-  const [fileResult, codeResult, specialistResult, coordinatorResult] = await Promise.all([
+  const loadResults = await withSupabaseRetry(() => Promise.all([
     supabase.from('trial_files').select('*').order('created_at', { ascending: true }).order('id', { ascending: true }),
     supabase.from('gipod_codes').select('*').order('created_at', { ascending: true }),
     supabase.rpc('list_device_specialists'),
     supabase.rpc('list_device_coordinators')
-  ]);
+  ]));
+  if (!Array.isArray(loadResults)) throw resultError(loadResults) || new Error('Unable to reload queue.');
+  const [fileResult, codeResult, specialistResult, coordinatorResult] = loadResults;
 
   if (fileResult.error) throw fileResult.error;
   if (codeResult.error) throw codeResult.error;
@@ -708,11 +794,13 @@ async function loadData() {
 }
 
 async function loadLeadDashboardData() {
-  const [activityResult, shipmentResult, cleanupResult] = await Promise.all([
+  const leadResults = await withSupabaseRetry(() => Promise.all([
     supabase.rpc('list_team_user_activity', { p_actor_id: currentUser.id }),
     supabase.from('app_shipment_activity').select('*').order('shipped_date', { ascending: false }).order('shipped_at', { ascending: false }),
     supabase.from('app_eod_cleanups').select('*').order('cleanup_date', { ascending: false }).order('created_at', { ascending: false })
-  ]);
+  ]));
+  if (!Array.isArray(leadResults)) throw resultError(leadResults) || new Error('Unable to reload lead dashboard.');
+  const [activityResult, shipmentResult, cleanupResult] = leadResults;
   if (activityResult.error) throw activityResult.error;
   if (shipmentResult.error) throw shipmentResult.error;
   if (cleanupResult.error) throw cleanupResult.error;
@@ -797,8 +885,8 @@ function subscribeRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'app_eod_cleanups' }, loadData)
     .subscribe((status) => {
       if (status === 'SUBSCRIBED') setConnection('Live');
-      if (status === 'CHANNEL_ERROR') setConnection('Error', 'Realtime error');
-      if (status === 'TIMED_OUT') setConnection('Error', 'Realtime timed out');
+      if (status === 'CHANNEL_ERROR') scheduleRealtimeReconnect('Realtime reconnecting');
+      if (status === 'TIMED_OUT') scheduleRealtimeReconnect('Realtime timed out');
     });
 }
 
@@ -820,6 +908,28 @@ function stopPresencePolling() {
   if (!presencePollTimer) return;
   clearInterval(presencePollTimer);
   presencePollTimer = null;
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatTimer = window.setInterval(async () => {
+    if (!currentUser || !supabase) return;
+    try {
+      const result = await withSupabaseRetry(() => supabase.from('trial_files').select('id', { head: true }).limit(1));
+      const error = resultError(result);
+      if (error) throw error;
+      if (connectionState !== 'Live') setConnection('Live');
+    } catch (error) {
+      if (isRecoverableSupabaseError(error)) scheduleRealtimeReconnect('Connection reconnecting');
+      else console.error('Heartbeat failed:', error);
+    }
+  }, 30000);
+}
+
+function stopHeartbeat() {
+  if (!heartbeatTimer) return;
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
 }
 
 function statusClass(file) {
@@ -1143,13 +1253,13 @@ async function claimPrepFromNotification(id) {
     preppedBy: initials,
     preppedById: currentUser.id
   };
-  const { data, error } = await supabase
+  const { data, error } = await withSupabaseRetry(() => supabase
     .from('trial_files')
     .update(fileToRow({ ...file, ...patch }))
     .eq('id', id)
     .eq('status', 'Ready for Prep')
     .select('id')
-    .maybeSingle();
+    .maybeSingle());
   if (error) return showError(error);
   dismissPrepNotification(id);
   if (!data) {
@@ -1742,11 +1852,11 @@ async function claimNextGipodCode(fileId) {
     return;
   }
 
-  const { data, error } = await supabase.rpc('claim_next_gipod_code', {
+  const { data, error } = await withSupabaseRetry(() => supabase.rpc('claim_next_gipod_code', {
     p_file_id: fileId,
     p_crm_number: crmNumber,
     p_used_date: todayLocalDate()
-  });
+  }));
 
   if (error) return showError(error);
   if (!data) {
@@ -1855,7 +1965,7 @@ function openFile(id) {
 async function updateFile(id, patch, reload = true) {
   const current = files.find((item) => item.id === id);
   const row = fileToRow({ ...current, ...patch });
-  const { error } = await supabase.from('trial_files').update(row).eq('id', id);
+  const { error } = await withSupabaseRetry(() => supabase.from('trial_files').update(row).eq('id', id));
   if (error) return showError(error);
   await logFileChanges(id, current, patch);
   if (reload) await loadData();
@@ -1867,10 +1977,10 @@ async function saveDeviceNumber(id, value) {
   const previousValue = current.deviceNumber || '';
   current.deviceNumber = value;
   if ($('editId')?.value === id && $('editDeviceNumber')) $('editDeviceNumber').value = value;
-  const { error } = await supabase
+  const { error } = await withSupabaseRetry(() => supabase
     .from('trial_files')
     .update({ device_number: value || '' })
-    .eq('id', id);
+    .eq('id', id));
   if (error) {
     current.deviceNumber = previousValue;
     if ($('editId')?.value === id && $('editDeviceNumber')) $('editDeviceNumber').value = previousValue;
@@ -1889,7 +1999,7 @@ async function updateGipod(id, patch, reload = true) {
     used_date: usedOn ? (patch.usedDate ?? current.usedDate ?? todayLocalDate()) : null,
     note: patch.note ?? current.note ?? ''
   };
-  const { error } = await supabase.from('gipod_codes').update(row).eq('id', id);
+  const { error } = await withSupabaseRetry(() => supabase.from('gipod_codes').update(row).eq('id', id));
   if (error) return showError(error);
   if (reload) await loadData();
 }
@@ -2099,7 +2209,7 @@ async function addBulkFiles(event) {
     $('bulkMessage').textContent = `Missing queue date on import line${missingDates.length === 1 ? '' : 's'} ${missingDates.join(', ')}.`;
     return;
   }
-  const { error } = await supabase.from('trial_files').insert(rows.map(fileToRow));
+  const { error } = await withSupabaseRetry(() => supabase.from('trial_files').insert(rows.map(fileToRow)));
   if (error) return showError(error);
   $('bulkModal').close();
   view = canView('preprep') ? 'preprep' : firstAllowedView();
@@ -2128,7 +2238,7 @@ async function addGipodCodes(event) {
   event.preventDefault();
   const codes = parsedGipodCodes();
   if (!codes.length) return;
-  const { error } = await supabase.from('gipod_codes').insert(codes.map((code) => ({ code })));
+  const { error } = await withSupabaseRetry(() => supabase.from('gipod_codes').insert(codes.map((code) => ({ code }))));
   if (error) return showError(error);
   $('codeModal').close();
   await loadData();
@@ -2171,17 +2281,17 @@ async function moveToNextStep(id) {
 }
 
 async function logActivity(userId, fileId, action) {
-  const { error } = await supabase.from('app_user_activity').insert({
+  const { error } = await withSupabaseRetry(() => supabase.from('app_user_activity').insert({
     user_id: userId,
     file_id: fileId,
     action,
     activity_date: todayLocalDate()
-  });
+  }));
   if (error) return showError(error);
 }
 
 async function logShipment(file) {
-  const { error } = await supabase.from('app_shipment_activity').insert({
+  const { error } = await withSupabaseRetry(() => supabase.from('app_shipment_activity').insert({
     file_id: file.id,
     first_name: file.first || '',
     last_name: file.last || '',
@@ -2190,7 +2300,7 @@ async function logShipment(file) {
     lane: file.lane || '',
     shipped_by_user_id: currentUser?.id || null,
     shipped_date: todayLocalDate()
-  });
+  }));
   if (error && error.code !== '23505') return showError(error);
 }
 
@@ -2244,9 +2354,9 @@ async function endOfDayCleanup() {
     return;
   }
   if (!confirm(`End of day cleanup will archive and clear ${shippedFiles.length} shipped file${shippedFiles.length === 1 ? '' : 's'} from the shipped lane. Continue?`)) return;
-  const { error: insertError } = await supabase.from('app_eod_cleanups').insert(cleanupPayload(shippedFiles));
+  const { error: insertError } = await withSupabaseRetry(() => supabase.from('app_eod_cleanups').insert(cleanupPayload(shippedFiles)));
   if (insertError) return showError(insertError);
-  const { error: deleteError } = await supabase.from('trial_files').delete().in('id', shippedFiles.map((file) => file.id));
+  const { error: deleteError } = await withSupabaseRetry(() => supabase.from('trial_files').delete().in('id', shippedFiles.map((file) => file.id)));
   if (deleteError) return showError(deleteError);
   await loadData();
 }
@@ -2280,7 +2390,7 @@ async function claimQa(id) {
 async function deleteFile(id) {
   const file = files.find((item) => item.id === id);
   if (!file || !isPrePrep(file) || !confirm(`Delete ${file.last}, ${file.first}? This cannot be undone.`)) return;
-  const { error } = await supabase.from('trial_files').delete().eq('id', id);
+  const { error } = await withSupabaseRetry(() => supabase.from('trial_files').delete().eq('id', id));
   if (error) return showError(error);
   await loadData();
 }
@@ -2289,7 +2399,7 @@ async function bulkDeleteFiles() {
   const ids = [...selectedFileIds].filter((id) => files.some((file) => file.id === id && isPrePrep(file)));
   if (!ids.length || !canEditFiles()) return;
   if (!confirm(`Delete ${ids.length} selected file${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
-  const { error } = await supabase.from('trial_files').delete().in('id', ids);
+  const { error } = await withSupabaseRetry(() => supabase.from('trial_files').delete().in('id', ids));
   if (error) return showError(error);
   selectedFileIds.clear();
   await loadData();
@@ -2299,7 +2409,7 @@ async function deleteCleanup(id) {
   if (!canManageUsers()) return;
   const cleanup = eodCleanups.find((item) => item.id === id);
   if (!cleanup || !confirm(`Delete the end-of-day cleanup report for ${formatDate(cleanup.cleanup_date)}? This cannot be undone.`)) return;
-  const { error } = await supabase.from('app_eod_cleanups').delete().eq('id', id);
+  const { error } = await withSupabaseRetry(() => supabase.from('app_eod_cleanups').delete().eq('id', id));
   if (error) return showError(error);
   await loadData();
 }
@@ -2312,9 +2422,9 @@ async function deleteLeadReports() {
   const reportCount = shipmentHistory.length + eodCleanups.length;
   if (!reportCount) return;
   if (!confirm(`Delete all Lead Dashboard reports? This will remove ${shipmentHistory.length} shipped file report${shipmentHistory.length === 1 ? '' : 's'} and ${eodCleanups.length} end-of-day cleanup report${eodCleanups.length === 1 ? '' : 's'}. This cannot be undone.`)) return;
-  const { error: shipmentError } = await supabase.from('app_shipment_activity').delete().not('id', 'is', null);
+  const { error: shipmentError } = await withSupabaseRetry(() => supabase.from('app_shipment_activity').delete().not('id', 'is', null));
   if (shipmentError) return showError(shipmentError);
-  const { error: cleanupError } = await supabase.from('app_eod_cleanups').delete().not('id', 'is', null);
+  const { error: cleanupError } = await withSupabaseRetry(() => supabase.from('app_eod_cleanups').delete().not('id', 'is', null));
   if (cleanupError) return showError(cleanupError);
   shipmentHistory = [];
   eodCleanups = [];
@@ -2323,6 +2433,11 @@ async function deleteLeadReports() {
 
 function showError(error) {
   console.error(error);
+  if (isRecoverableSupabaseError(error)) {
+    scheduleRealtimeReconnect('Connection reconnecting');
+    alert(error.message || 'Connection issue. The app is reconnecting.');
+    return;
+  }
   setConnection('Error', error.message || 'Supabase error');
   alert(error.message || 'Supabase error');
 }
@@ -2405,7 +2520,7 @@ async function boot() {
     renderConfig();
     return;
   }
-  supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+  createSupabaseClient();
   if (!currentUser) {
     renderLogin();
     return;
@@ -2419,6 +2534,7 @@ async function startApp() {
     await loadData();
     subscribeRealtime();
     startPresencePolling();
+    startHeartbeat();
   } catch (error) {
     showError(error);
   }
