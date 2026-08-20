@@ -1809,7 +1809,20 @@ async function updateFile(id, patch, reload = true) {
 async function saveDeviceNumber(id, value) {
   const current = files.find((item) => item.id === id);
   if (!current || (current.deviceNumber || '') === value) return;
-  await updateFile(id, { deviceNumber: value });
+  const previousValue = current.deviceNumber || '';
+  current.deviceNumber = value;
+  if ($('editId')?.value === id && $('editDeviceNumber')) $('editDeviceNumber').value = value;
+  const { error } = await supabase
+    .from('trial_files')
+    .update({ device_number: value || '' })
+    .eq('id', id);
+  if (error) {
+    current.deviceNumber = previousValue;
+    if ($('editId')?.value === id && $('editDeviceNumber')) $('editDeviceNumber').value = previousValue;
+    return showError(error);
+  }
+  await addFileLog(id, 'Device number changed', 'Device number', previousValue, value);
+  await loadData();
 }
 
 async function updateGipod(id, patch, reload = true) {
@@ -2320,9 +2333,6 @@ document.addEventListener('change', async (event) => {
   }
   if (event.target.dataset.action === 'assign-lane') {
     await updateFile(event.target.dataset.id, { lane: event.target.value });
-  }
-  if (event.target.dataset.action === 'update-device-number') {
-    await updateFile(event.target.dataset.id, { deviceNumber: event.target.value.trim() });
   }
 });
 
