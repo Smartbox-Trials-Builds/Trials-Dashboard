@@ -1,15 +1,90 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'node:path';
+import http from 'node:http';
 
 const isDev = !app.isPackaged;
+const sidekickBridgePort = 47631;
 let mainWindow = null;
 let autoUpdaterInstance = null;
+let sidekickBridgeServer = null;
+let sidekickNotifications = [];
 let updateState = {
   status: isDev ? 'disabled' : 'idle',
   message: isDev ? 'Updates are available after installing the app.' : 'Ready to check for updates.',
   version: '',
   progress: null
 };
+
+function pruneSidekickNotifications() {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  sidekickNotifications = sidekickNotifications
+    .filter((item) => item.createdAt >= cutoff)
+    .slice(-100);
+}
+
+function addSidekickNotification(payload = {}) {
+  const title = String(payload.title || 'Ready for prep').slice(0, 120);
+  const message = String(payload.message || '').slice(0, 500);
+  if (!message) return null;
+
+  const notification = {
+    id: String(payload.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`),
+    title,
+    message,
+    client: String(payload.client || ''),
+    device: String(payload.device || ''),
+    loan: String(payload.loan || ''),
+    crm: String(payload.crm || ''),
+    createdAt: Date.now()
+  };
+
+  sidekickNotifications.push(notification);
+  pruneSidekickNotifications();
+  return notification;
+}
+
+function sendBridgeJson(res, statusCode, body) {
+  res.writeHead(statusCode, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json; charset=utf-8'
+  });
+  res.end(JSON.stringify(body));
+}
+
+function startSidekickBridge() {
+  if (sidekickBridgeServer) return;
+
+  sidekickBridgeServer = http.createServer((req, res) => {
+    if (req.method === 'OPTIONS') {
+      sendBridgeJson(res, 204, {});
+      return;
+    }
+
+    const url = new URL(req.url || '/', `http://127.0.0.1:${sidekickBridgePort}`);
+    if (req.method !== 'GET' || url.pathname !== '/notifications') {
+      sendBridgeJson(res, 404, { ok: false });
+      return;
+    }
+
+    pruneSidekickNotifications();
+    const since = Number(url.searchParams.get('since') || 0);
+    const notifications = sidekickNotifications.filter((item) => item.createdAt > since);
+    sendBridgeJson(res, 200, {
+      ok: true,
+      now: Date.now(),
+      notifications
+    });
+  });
+
+  sidekickBridgeServer.on('error', (error) => {
+    console.error('Sidekick notification bridge failed:', error);
+    sidekickBridgeServer = null;
+  });
+
+  sidekickBridgeServer.listen(sidekickBridgePort, '127.0.0.1');
+}
 
 function publishUpdateState(patch) {
   updateState = { ...updateState, ...patch };
@@ -106,6 +181,8 @@ ipcMain.handle('updates:install', async () => {
   if (autoUpdater) autoUpdater.quitAndInstall();
 });
 
+ipcMain.handle('sidekick:notify-prep', (_event, payload) => addSidekickNotification(payload));
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -135,8 +212,16 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  startSidekickBridge();
   createWindow();
   setTimeout(() => checkForUpdates(true), 3000);
+});
+
+app.on('before-quit', () => {
+  if (sidekickBridgeServer) {
+    sidekickBridgeServer.close();
+    sidekickBridgeServer = null;
+  }
 });
 
 app.on('window-all-closed', () => {

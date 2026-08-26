@@ -48,7 +48,6 @@ let suppressExistingPrepNotifications = false;
 let bulkLinks = [];
 let connectionState = 'Connecting';
 let theme = localStorage.getItem('theme') || 'light';
-let authMode = 'login';
 let currentUser = null;
 let adminViewRole = '';
 let realtimeChannel = null;
@@ -476,33 +475,22 @@ function renderLogin() {
           <div class="eyebrow">Smartbox trials</div>
           <h1>Welcome to the Smartbox Trials Dashboard!</h1>
         </div>
-        <div class="auth-toggle" role="tablist" aria-label="Choose login or signup">
-          <button id="loginModeButton" class="tab ${authMode === 'login' ? 'active' : ''}" type="button">Login</button>
-          <button id="signupModeButton" class="tab ${authMode === 'signup' ? 'active' : ''}" type="button">Sign up</button>
-        </div>
         <form id="authForm" class="form auth-form">
-          <div class="field"><label for="authFirstName">First name</label><input id="authFirstName" autocomplete="given-name" value="${esc(authMode === 'login' ? rememberedUser?.firstName || '' : '')}" required></div>
-          <div class="field"><label for="authLastName">Last name</label><input id="authLastName" autocomplete="family-name" value="${esc(authMode === 'login' ? rememberedUser?.lastName || '' : '')}" required></div>
+          <div class="field"><label for="authFirstName">First name</label><input id="authFirstName" autocomplete="given-name" value="${esc(rememberedUser?.firstName || '')}" required></div>
+          <div class="field"><label for="authLastName">Last name</label><input id="authLastName" autocomplete="family-name" value="${esc(rememberedUser?.lastName || '')}" required></div>
           <div class="field full"><label for="authPin">4-digit PIN</label><input id="authPin" inputmode="numeric" autocomplete="current-password" pattern="[0-9]{4}" maxlength="4" placeholder="1234" required></div>
-          <label class="check-row full"><input id="rememberUser" type="checkbox" ${authMode === 'login' && rememberedUser ? 'checked' : ''}> Remember my name on this computer</label>
-          <div id="authMessage" class="muted full">${authMode === 'login' ? 'Enter your name and PIN to continue.' : 'Create a user with your first and last name and a unique 4-digit PIN.'}</div>
+          <label class="check-row full"><input id="rememberUser" type="checkbox" ${rememberedUser ? 'checked' : ''}> Remember my name on this computer</label>
+          <div id="authMessage" class="muted full">Enter your name and PIN to continue. Admins and Leads add users in User Management.</div>
           <div class="footer full">
             <button id="themeToggle" class="btn ghost" type="button">${theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>
-            <button id="authSubmit" class="btn" type="submit">${authMode === 'login' ? 'Login' : 'Sign up'}</button>
+            <button id="authSubmit" class="btn" type="submit">Login</button>
           </div>
         </form>
       </section>
     </main>
   `;
   $('themeToggle').addEventListener('click', toggleTheme);
-  $('loginModeButton').addEventListener('click', () => setAuthMode('login'));
-  $('signupModeButton').addEventListener('click', () => setAuthMode('signup'));
   $('authForm').addEventListener('submit', submitAuth);
-}
-
-function setAuthMode(mode) {
-  authMode = mode;
-  renderLogin();
 }
 
 function authPayload() {
@@ -527,10 +515,9 @@ async function submitAuth(event) {
   }
   $('authSubmit').disabled = true;
   $('authMessage').className = 'muted full';
-  $('authMessage').textContent = authMode === 'login' ? 'Logging in...' : 'Creating user...';
+  $('authMessage').textContent = 'Logging in...';
 
-  const rpcName = authMode === 'login' ? 'login_app_user' : 'register_app_user';
-  const { data, error } = await supabase.rpc(rpcName, payload);
+  const { data, error } = await supabase.rpc('login_app_user', payload);
   $('authSubmit').disabled = false;
 
   if (error) {
@@ -1220,6 +1207,21 @@ function dismissPrepNotification(fileId) {
   activePrepNotifications.delete(fileId);
 }
 
+function sendSidekickPrepNotification(file) {
+  if (!window.dashboardSidekick?.notifyPrep) return;
+  const client = `${file.last || ''}, ${file.first || ''}`.trim().replace(/^,\s*/, '');
+  const crmNumber = crmRecordNumber(file.crm);
+  window.dashboardSidekick.notifyPrep({
+    id: file.id,
+    title: 'Ready for prep',
+    message: `${client || 'A client file'} is ready for prep${file.device ? ` on ${file.device}` : ''}.`,
+    client,
+    device: file.device || '',
+    loan: file.loan || '',
+    crm: crmNumber || file.crm || ''
+  }).catch((error) => console.error('Sidekick notification bridge failed:', error));
+}
+
 function showPrepNotification(file) {
   if (activePrepNotifications.has(file.id) || seenPrepNotifications.has(file.id)) return;
   seenPrepNotifications.add(file.id);
@@ -1239,6 +1241,7 @@ function showPrepNotification(file) {
     <button class="btn" data-action="claim-prep-notification" data-id="${file.id}" type="button">Claim</button>
   `;
   notificationHost().appendChild(toast);
+  sendSidekickPrepNotification(file);
   const timer = setTimeout(() => dismissPrepNotification(file.id), 10000);
   activePrepNotifications.set(file.id, { element: toast, timer });
 }

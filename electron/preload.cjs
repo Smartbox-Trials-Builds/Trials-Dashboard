@@ -11,3 +11,7 @@ contextBridge.exposeInMainWorld('dashboardUpdates', {
     return () => ipcRenderer.removeListener('updates:state', listener);
   }
 });
+
+contextBridge.exposeInMainWorld('dashboardSidekick', {
+  notifyPrep: (payload) => ipcRenderer.invoke('sidekick:notify-prep', payload)
+});

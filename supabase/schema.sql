@@ -210,40 +210,8 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
-declare
-  created_user public.app_users;
 begin
-  if length(trim(p_first_name)) = 0 or length(trim(p_last_name)) = 0 then
-    raise exception 'First and last name are required.';
-  end if;
-
-  if p_pin !~ '^\d{4}$' then
-    raise exception 'PIN must be exactly 4 digits.';
-  end if;
-
-  insert into public.app_users (first_name, last_name, pin_hash, pin_lookup, is_logged_in, last_login_at)
-  values (
-    initcap(trim(p_first_name)),
-    initcap(trim(p_last_name)),
-    extensions.crypt(p_pin, extensions.gen_salt('bf')),
-    pg_catalog.encode(extensions.digest(p_pin, 'sha256'), 'hex'),
-    true,
-    now()
-  )
-  returning * into created_user;
-
-  return jsonb_build_object(
-    'id', created_user.id,
-    'firstName', created_user.first_name,
-    'lastName', created_user.last_name,
-    'role', created_user.role,
-    'permissions', created_user.permissions,
-    'isNewHire', created_user.is_new_hire,
-    'isLoggedIn', created_user.is_logged_in
-  );
-exception
-  when unique_violation then
-    raise exception 'A user with that name or PIN already exists.';
+  raise exception 'Sign up is disabled. Admin and Lead users must add users manually.';
 end;
 $$;
 
