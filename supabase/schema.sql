@@ -642,15 +642,24 @@ begin
     raise exception 'Trained devices must be a list.';
   end if;
 
+  select * into target_user
+  from public.app_users
+  where id = p_user_id
+    and is_active = true;
+
+  if target_user.id is null then
+    raise exception 'User not found.';
+  end if;
+
+  if coalesce(p_is_new_hire, false) is distinct from target_user.is_new_hire and actor_role <> 'Lead' then
+    raise exception 'Only Lead users can activate or deactivate new hire mode.';
+  end if;
+
   update public.app_users
   set trained_devices = coalesce(p_trained_devices, '[]'::jsonb),
       is_new_hire = coalesce(p_is_new_hire, false)
   where app_users.id = p_user_id
   returning * into target_user;
-
-  if target_user.id is null then
-    raise exception 'User not found.';
-  end if;
 
   return jsonb_build_object(
     'id', target_user.id,

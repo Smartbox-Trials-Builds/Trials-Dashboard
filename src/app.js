@@ -81,6 +81,10 @@ function formatDate(value) {
   return date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
 }
 
+function formatDateRange(start, end) {
+  return `${formatDate(start)} - ${formatDate(end)}`;
+}
+
 function formatDateTime(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -118,6 +122,10 @@ function canView(name) {
 
 function canManageUsers() {
   return currentUser && userManagerRoles.includes(effectiveRole());
+}
+
+function canActivateNewHireMode() {
+  return effectiveRole() === 'Lead';
 }
 
 function canEditFiles() {
@@ -295,9 +303,7 @@ function renderShell() {
           </div>
           <div class="tabs">
             <button id="lead-tab-schedules" class="tab active" type="button">Schedules</button>
-            <button id="lead-tab-shipped" class="tab" type="button">Shipped Files</button>
             <button id="lead-tab-training" class="tab" type="button">Trained On</button>
-            <button id="lead-tab-current" class="tab" type="button">Current Tasks</button>
             <button id="lead-tab-weekly" class="tab" type="button">Weekly User Totals</button>
             <button id="lead-tab-totals" class="tab" type="button">Loan / Device Totals</button>
             <button id="lead-tab-cleanups" class="tab" type="button">End of Day Cleanups</button>
@@ -393,7 +399,7 @@ function renderShell() {
   $('bulkCodesButton').addEventListener('click', showCodeModal);
   $('tab-files').addEventListener('click', () => setPrepTab('files'));
   $('tab-codes').addEventListener('click', () => setPrepTab('codes'));
-  ['schedules', 'shipped', 'training', 'current', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
+  ['schedules', 'training', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
     if ($(`lead-tab-${tab}`)) $(`lead-tab-${tab}`).addEventListener('click', () => setLeadTab(tab));
   });
   $('fileForm').addEventListener('submit', saveFile);
@@ -966,12 +972,36 @@ function tableRows(rows, emptyText, colspan) {
   return rows.join('') || `<tr><td colspan="${colspan}"><div class="empty">${emptyText}</div></td></tr>`;
 }
 
-function weekKey(dateValue) {
-  return isoDate(mondayOf(new Date(`${dateValue}T00:00:00`)));
+function fridayOfWeek(dateValue) {
+  const friday = mondayOf(new Date(`${dateValue}T00:00:00`));
+  friday.setDate(friday.getDate() + 4);
+  return friday;
 }
 
-function monthKey(dateValue) {
-  return String(dateValue || '').slice(0, 7) || 'Unknown';
+function lastFridayOfMonth(year, monthIndex) {
+  const date = new Date(year, monthIndex + 1, 0);
+  while (date.getDay() !== 5) date.setDate(date.getDate() - 1);
+  return date;
+}
+
+function weeklyPeriod(dateValue) {
+  const start = mondayOf(new Date(`${dateValue}T00:00:00`));
+  const end = fridayOfWeek(dateValue);
+  return {
+    key: isoDate(start),
+    label: formatDateRange(isoDate(start), isoDate(end))
+  };
+}
+
+function monthlyPeriod(dateValue) {
+  const date = new Date(`${dateValue}T00:00:00`);
+  if (Number.isNaN(date.valueOf())) return { key: 'Unknown', label: 'Unknown' };
+  const start = new Date(date.getFullYear(), date.getMonth(), 1);
+  const end = lastFridayOfMonth(date.getFullYear(), date.getMonth());
+  return {
+    key: isoDate(start),
+    label: formatDateRange(isoDate(start), isoDate(end))
+  };
 }
 
 function formatAction(action) {
@@ -1305,32 +1335,37 @@ function renderLeadCurrentTasks() {
 }
 
 function renderLeadWeeklyUserTotals() {
-  const start = isoDate(mondayOf());
+  const weekStart = mondayOf();
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 4);
+  const start = isoDate(weekStart);
+  const end = isoDate(weekEnd);
+  const range = formatDateRange(start, isoDate(weekEnd));
   const rows = users.map((user) => {
-    const prep = teamActivity.filter((item) => item.user_id === user.id && item.action === 'prep_completed' && item.activity_date >= start).reduce((total, item) => total + Number(item.count || 0), 0);
-    const qa = teamActivity.filter((item) => item.user_id === user.id && item.action === 'qa_completed' && item.activity_date >= start).reduce((total, item) => total + Number(item.count || 0), 0);
+    const prep = teamActivity.filter((item) => item.user_id === user.id && item.action === 'prep_completed' && item.activity_date >= start && item.activity_date <= end).reduce((total, item) => total + Number(item.count || 0), 0);
+    const qa = teamActivity.filter((item) => item.user_id === user.id && item.action === 'qa_completed' && item.activity_date >= start && item.activity_date <= end).reduce((total, item) => total + Number(item.count || 0), 0);
     return `<tr><td>${esc(userFullName(user))}</td><td>${esc(user.role)}</td><td>${prep}</td><td>${qa}</td><td>${prep + qa}</td></tr>`;
   });
-  return `<div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Preps this week</th><th>QA this week</th><th>Total</th></tr></thead><tbody>${tableRows(rows, 'No users found.', 5)}</tbody></table></div>`;
+  return `<section class="profile-panel"><h3>Weekly User Totals</h3><div class="muted">Date range: ${esc(range)}</div><div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Preps this week</th><th>QA this week</th><th>Total</th></tr></thead><tbody>${tableRows(rows, 'No users found.', 5)}</tbody></table></div></section>`;
 }
 
-function shipmentTotals(periodKey, field) {
+function shipmentTotals(periodForDate, field) {
   const totals = {};
   shipmentHistory.forEach((item) => {
-    const period = periodKey(item.shipped_date);
+    const period = periodForDate(item.shipped_date);
     const label = item[field] || 'Not listed';
-    const key = `${period}||${label}`;
-    totals[key] = { period, label, count: (totals[key]?.count || 0) + 1 };
+    const key = `${period.key}||${label}`;
+    totals[key] = { period: period.label, sortKey: period.key, label, count: (totals[key]?.count || 0) + 1 };
   });
-  return Object.values(totals).sort((a, b) => b.period.localeCompare(a.period) || b.count - a.count || a.label.localeCompare(b.label));
+  return Object.values(totals).sort((a, b) => b.sortKey.localeCompare(a.sortKey) || b.count - a.count || a.label.localeCompare(b.label));
 }
 
 function totalsTable(title, rows) {
-  return `<section class="profile-panel"><h3>${title}</h3><div class="table-wrap"><table class="table"><thead><tr><th>Period</th><th>Type</th><th>Sent</th></tr></thead><tbody>${tableRows(rows.map((row) => `<tr><td>${esc(row.period)}</td><td>${esc(row.label)}</td><td>${row.count}</td></tr>`), 'No shipment totals yet.', 3)}</tbody></table></div></section>`;
+  return `<section class="profile-panel"><h3>${title}</h3><div class="table-wrap"><table class="table"><thead><tr><th>Date range</th><th>Type</th><th>Sent</th></tr></thead><tbody>${tableRows(rows.map((row) => `<tr><td>${esc(row.period)}</td><td>${esc(row.label)}</td><td>${row.count}</td></tr>`), 'No shipment totals yet.', 3)}</tbody></table></div></section>`;
 }
 
 function renderLeadShipmentTotals() {
-  return `<div class="profile-grid">${totalsTable('Weekly loan type totals', shipmentTotals(weekKey, 'loan_type'))}${totalsTable('Monthly loan type totals', shipmentTotals(monthKey, 'loan_type'))}${totalsTable('Weekly device type totals', shipmentTotals(weekKey, 'device'))}${totalsTable('Monthly device type totals', shipmentTotals(monthKey, 'device'))}</div>`;
+  return `<div class="profile-grid">${totalsTable('Weekly loan type totals', shipmentTotals(weeklyPeriod, 'loan_type'))}${totalsTable('Monthly loan type totals', shipmentTotals(monthlyPeriod, 'loan_type'))}${totalsTable('Weekly device type totals', shipmentTotals(weeklyPeriod, 'device'))}${totalsTable('Monthly device type totals', shipmentTotals(monthlyPeriod, 'device'))}</div>`;
 }
 
 function objectTotalsTable(title, totals) {
@@ -1358,18 +1393,50 @@ function renderLeadCleanups() {
 function renderLeadReportActions() {
   const reportCount = shipmentHistory.length + eodCleanups.length;
   return canManageUsers()
-    ? `<div class="report-actions"><button class="btn danger" data-action="delete-lead-reports" type="button" ${reportCount ? '' : 'disabled'}>Delete all lead reports</button><span class="muted">${reportCount} saved report record${reportCount === 1 ? '' : 's'}</span></div>`
+    ? `<div class="report-actions"><button class="btn secondary" data-action="export-daily-reports" type="button" ${shipmentHistory.length ? '' : 'disabled'}>Export daily reports to Excel</button><button class="btn danger" data-action="delete-lead-reports" type="button" ${reportCount ? '' : 'disabled'}>Delete all lead reports</button><span class="muted">${reportCount} saved report record${reportCount === 1 ? '' : 's'}</span></div>`
     : '';
+}
+
+function csvCell(value) {
+  const text = String(value ?? '');
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadTextFile(filename, content, type = 'text/csv;charset=utf-8') {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportDailyReports() {
+  if (!canManageUsers() || !shipmentHistory.length) return;
+  const headers = ['Shipped date', 'Client', 'Device', 'Loan type', 'Lane'];
+  const rows = shipmentHistory
+    .slice()
+    .sort((a, b) => String(b.shipped_date || '').localeCompare(String(a.shipped_date || '')) || `${a.last_name || ''}, ${a.first_name || ''}`.localeCompare(`${b.last_name || ''}, ${b.first_name || ''}`))
+    .map((item) => [
+      formatDate(item.shipped_date),
+      `${item.last_name || ''}, ${item.first_name || ''}`.trim(),
+      item.device || 'Not listed',
+      item.loan_type || 'Not listed',
+      item.lane || 'Not listed'
+    ]);
+  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
+  downloadTextFile(`daily-reports-${todayLocalDate()}.csv`, csv);
 }
 
 function renderLeadDashboard() {
   if (!$('leadDashboardBody')) return;
-  if (leadTab === 'queue') leadTab = 'schedules';
+  if (['queue', 'shipped', 'current'].includes(leadTab)) leadTab = 'schedules';
   const renderers = {
     schedules: renderLeadSchedules,
-    shipped: renderLeadShipped,
     training: renderLeadTraining,
-    current: renderLeadCurrentTasks,
     weekly: renderLeadWeeklyUserTotals,
     totals: renderLeadShipmentTotals,
     cleanups: renderLeadCleanups
@@ -1449,6 +1516,7 @@ function renderProfile() {
   });
   const claimed = profileClaimedJobs();
   const trainedDevices = trainedDeviceList(profileUser);
+  const canToggleNewHire = canActivateNewHireMode();
   $('profileBody').innerHTML = `
     <div class="profile-grid">
       ${isCoordinatorProfile ? `
@@ -1476,8 +1544,8 @@ function renderProfile() {
         <div class="option-grid">
           ${trainedDeviceOptions.map((device) => `<label class="check-card"><input type="checkbox" data-trained-device="${esc(device)}" ${isDeviceOptionSelected(profileUser, device) ? 'checked' : ''}> <span>${esc(device)}</span></label>`).join('')}
         </div>
-        <label class="check-row new-hire-toggle"><input id="profileNewHire" type="checkbox" ${profileUser.isNewHire ? 'checked' : ''}> New hire</label>
-        <span class="muted">Prep notifications only show for matching trained devices. New hires get the first claim window before the rest of the team.</span>
+        <label class="check-row new-hire-toggle"><input id="profileNewHire" type="checkbox" ${profileUser.isNewHire ? 'checked' : ''} ${canToggleNewHire ? '' : 'disabled'}> New hire</label>
+        <span class="muted">${canToggleNewHire ? 'Prep notifications only show for matching trained devices. New hires get the first claim window before the rest of the team.' : 'Only Lead users can activate or deactivate new hire mode.'}</span>
         <div class="footer"><button class="btn" data-action="save-trained-devices" data-id="${profileUser.id}" type="button">Save training</button></div>
       </section>
       ${profileUser.id === currentUser.id ? `
@@ -1576,7 +1644,7 @@ function render() {
   $('bulkFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkDeleteFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkCodesButton').classList.toggle('hide', prepTab !== 'codes');
-  ['schedules', 'shipped', 'training', 'current', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
+  ['schedules', 'training', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
     const tabElement = $(`lead-tab-${tab}`);
     if (tabElement) tabElement.classList.toggle('active', leadTab === tab);
   });
@@ -1750,11 +1818,17 @@ async function saveTrainedDevices(userId) {
     .map((input) => input.dataset.trainedDevice)
     .filter(Boolean);
   const uniqueDevices = [...new Set(trainedDevices)];
+  const nextIsNewHire = Boolean($('profileNewHire')?.checked);
+  if (nextIsNewHire !== Boolean(profileUser?.isNewHire) && !canActivateNewHireMode()) {
+    alert('Only Lead users can activate or deactivate new hire mode.');
+    renderProfile();
+    return;
+  }
   const { data, error } = await supabase.rpc('update_app_user_trained_devices', {
     p_actor_id: currentUser.id,
     p_user_id: userId,
     p_trained_devices: uniqueDevices,
-    p_is_new_hire: Boolean($('profileNewHire')?.checked)
+    p_is_new_hire: nextIsNewHire
   });
   if (error) return showError(error);
   profileUser = data;
@@ -2447,12 +2521,13 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file'].includes(action)) event.stopPropagation();
+  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
   if (action === 'delete-cleanup') await deleteCleanup(id);
   if (action === 'delete-lead-reports') await deleteLeadReports();
+  if (action === 'export-daily-reports') exportDailyReports();
   if (action === 'claim-prep-notification') await claimPrepFromNotification(id);
   if (action === 'prepper-filter') setPrepperFilter(target.dataset.name);
   if (action === 'code-filter') setCodeTab(target.dataset.name);
