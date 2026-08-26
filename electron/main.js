@@ -7,7 +7,9 @@ const sidekickBridgePort = 47631;
 let mainWindow = null;
 let autoUpdaterInstance = null;
 let sidekickBridgeServer = null;
+let sidekickLinkedProfile = null;
 let sidekickNotifications = [];
+let sidekickLogQueue = [];
 let updateState = {
   status: isDev ? 'disabled' : 'idle',
   message: isDev ? 'Updates are available after installing the app.' : 'Ready to check for updates.',
@@ -43,10 +45,62 @@ function addSidekickNotification(payload = {}) {
   return notification;
 }
 
+function setSidekickProfile(profile = null) {
+  if (!profile?.id) {
+    sidekickLinkedProfile = null;
+    return null;
+  }
+
+  sidekickLinkedProfile = {
+    id: String(profile.id),
+    name: String(profile.name || ''),
+    role: String(profile.role || ''),
+    linkedAt: Date.now()
+  };
+  return sidekickLinkedProfile;
+}
+
+function addSidekickLog(payload = {}) {
+  if (!sidekickLinkedProfile?.id || payload.userId !== sidekickLinkedProfile.id) return null;
+  const action = String(payload.action || '').slice(0, 120);
+  if (!action) return null;
+
+  const log = {
+    userId: sidekickLinkedProfile.id,
+    userName: sidekickLinkedProfile.name,
+    action,
+    detail: String(payload.detail || '').slice(0, 1000),
+    metadata: payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {},
+    occurredAt: new Date().toISOString()
+  };
+
+  sidekickLogQueue.push(log);
+  sidekickLogQueue = sidekickLogQueue.slice(-500);
+  return log;
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 100000) req.destroy();
+    });
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        resolve(null);
+      }
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
 function sendBridgeJson(res, statusCode, body) {
   res.writeHead(statusCode, {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Content-Type': 'application/json; charset=utf-8'
   });
@@ -56,26 +110,46 @@ function sendBridgeJson(res, statusCode, body) {
 function startSidekickBridge() {
   if (sidekickBridgeServer) return;
 
-  sidekickBridgeServer = http.createServer((req, res) => {
+  sidekickBridgeServer = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       sendBridgeJson(res, 204, {});
       return;
     }
 
     const url = new URL(req.url || '/', `http://127.0.0.1:${sidekickBridgePort}`);
-    if (req.method !== 'GET' || url.pathname !== '/notifications') {
-      sendBridgeJson(res, 404, { ok: false });
+
+    if (req.method === 'GET' && url.pathname === '/notifications') {
+      pruneSidekickNotifications();
+      const since = Number(url.searchParams.get('since') || 0);
+      const notifications = sidekickNotifications.filter((item) => item.createdAt > since);
+      sendBridgeJson(res, 200, {
+        ok: true,
+        now: Date.now(),
+        notifications
+      });
       return;
     }
 
-    pruneSidekickNotifications();
-    const since = Number(url.searchParams.get('since') || 0);
-    const notifications = sidekickNotifications.filter((item) => item.createdAt > since);
-    sendBridgeJson(res, 200, {
-      ok: true,
-      now: Date.now(),
-      notifications
-    });
+    if (req.method === 'GET' && url.pathname === '/profile') {
+      sendBridgeJson(res, 200, {
+        ok: Boolean(sidekickLinkedProfile),
+        profile: sidekickLinkedProfile
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/logs') {
+      const body = await readJsonBody(req);
+      if (!body) {
+        sendBridgeJson(res, 400, { ok: false, message: 'Invalid JSON.' });
+        return;
+      }
+      const log = addSidekickLog(body);
+      sendBridgeJson(res, log ? 200 : 403, { ok: Boolean(log) });
+      return;
+    }
+
+    sendBridgeJson(res, 404, { ok: false });
   });
 
   sidekickBridgeServer.on('error', (error) => {
@@ -182,6 +256,10 @@ ipcMain.handle('updates:install', async () => {
 });
 
 ipcMain.handle('sidekick:notify-prep', (_event, payload) => addSidekickNotification(payload));
+ipcMain.handle('sidekick:set-profile', (_event, profile) => setSidekickProfile(profile));
+ipcMain.handle('sidekick:clear-profile', () => setSidekickProfile(null));
+ipcMain.handle('sidekick:get-profile', () => sidekickLinkedProfile);
+ipcMain.handle('sidekick:take-logs', () => sidekickLogQueue.splice(0));
 
 function createWindow() {
   mainWindow = new BrowserWindow({
