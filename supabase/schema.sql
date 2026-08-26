@@ -101,19 +101,6 @@ create table if not exists public.app_user_activity (
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.app_sidekick_logs (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references public.app_users(id) on delete cascade,
-  action text not null default 'Sidekick action',
-  detail text not null default '',
-  metadata jsonb not null default '{}'::jsonb,
-  occurred_at timestamptz not null default now(),
-  created_at timestamptz not null default now()
-);
-
-create index if not exists app_sidekick_logs_user_time_idx
-on public.app_sidekick_logs (user_id, occurred_at desc);
-
 create table if not exists public.app_shipment_activity (
   id uuid primary key default gen_random_uuid(),
   file_id uuid not null,
@@ -686,87 +673,6 @@ begin
 end;
 $$;
 
-create or replace function public.log_app_sidekick_action(
-  p_user_id uuid,
-  p_action text,
-  p_detail text default '',
-  p_metadata jsonb default '{}'::jsonb,
-  p_occurred_at timestamptz default now()
-)
-returns void
-language plpgsql
-security definer
-set search_path = ''
-as $$
-begin
-  if not exists (
-    select 1
-    from public.app_users
-    where app_users.id = p_user_id
-      and app_users.is_active = true
-  ) then
-    raise exception 'User not found.';
-  end if;
-
-  if length(trim(coalesce(p_action, ''))) = 0 then
-    raise exception 'Action is required.';
-  end if;
-
-  if jsonb_typeof(coalesce(p_metadata, '{}'::jsonb)) <> 'object' then
-    raise exception 'Metadata must be an object.';
-  end if;
-
-  insert into public.app_sidekick_logs (user_id, action, detail, metadata, occurred_at)
-  values (
-    p_user_id,
-    left(trim(p_action), 120),
-    left(coalesce(p_detail, ''), 1000),
-    coalesce(p_metadata, '{}'::jsonb),
-    coalesce(p_occurred_at, now())
-  );
-end;
-$$;
-
-create or replace function public.list_app_sidekick_logs(p_actor_id uuid, p_user_id uuid)
-returns table (
-  id uuid,
-  action text,
-  detail text,
-  metadata jsonb,
-  occurred_at timestamptz,
-  created_at timestamptz
-)
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  actor_role public.app_user_role;
-begin
-  select role into actor_role
-  from public.app_users
-  where id = p_actor_id
-    and is_active = true;
-
-  if p_actor_id <> p_user_id and actor_role not in ('Admin', 'Lead') then
-    raise exception 'Only Admin, Lead, or the profile owner can view Sidekick logs.';
-  end if;
-
-  return query
-  select
-    app_sidekick_logs.id,
-    app_sidekick_logs.action,
-    app_sidekick_logs.detail,
-    app_sidekick_logs.metadata,
-    app_sidekick_logs.occurred_at,
-    app_sidekick_logs.created_at
-  from public.app_sidekick_logs
-  where app_sidekick_logs.user_id = p_user_id
-  order by app_sidekick_logs.occurred_at desc, app_sidekick_logs.created_at desc
-  limit 200;
-end;
-$$;
-
 create or replace function public.list_team_user_activity(p_actor_id uuid)
 returns table (
   user_id uuid,
@@ -903,7 +809,6 @@ alter table public.gipod_codes enable row level security;
 alter table public.app_users enable row level security;
 alter table public.app_user_activity enable row level security;
 alter table public.app_file_logs enable row level security;
-alter table public.app_sidekick_logs enable row level security;
 alter table public.app_shipment_activity enable row level security;
 alter table public.app_eod_cleanups enable row level security;
 alter table public.coordinator_auto_queue enable row level security;
@@ -982,18 +887,6 @@ on public.app_user_activity for select
 to anon, authenticated
 using (true);
 
-drop policy if exists "Team can insert sidekick logs" on public.app_sidekick_logs;
-create policy "Team can insert sidekick logs"
-on public.app_sidekick_logs for insert
-to anon, authenticated
-with check (true);
-
-drop policy if exists "Team can read sidekick logs through app" on public.app_sidekick_logs;
-create policy "Team can read sidekick logs through app"
-on public.app_sidekick_logs for select
-to anon, authenticated
-using (true);
-
 drop policy if exists "Team can read shipment activity" on public.app_shipment_activity;
 create policy "Team can read shipment activity"
 on public.app_shipment_activity for select
@@ -1054,7 +947,6 @@ grant select, insert, update, delete on public.gipod_codes to anon, authenticate
 revoke all on public.app_users from anon, authenticated;
 grant select, insert on public.app_file_logs to anon, authenticated;
 grant select, insert on public.app_user_activity to anon, authenticated;
-grant select, insert on public.app_sidekick_logs to anon, authenticated;
 grant select, insert, delete on public.app_shipment_activity to anon, authenticated;
 grant select, insert, delete on public.app_eod_cleanups to anon, authenticated;
 grant select, insert, delete on public.coordinator_auto_queue to anon, authenticated;
@@ -1072,8 +964,6 @@ grant execute on function public.update_own_app_user_pin(uuid, text, text) to an
 grant execute on function public.update_app_user_schedule(uuid, uuid, jsonb) to anon, authenticated;
 grant execute on function public.update_app_user_trained_devices(uuid, uuid, jsonb, boolean) to anon, authenticated;
 grant execute on function public.list_app_user_activity(uuid, uuid) to anon, authenticated;
-grant execute on function public.log_app_sidekick_action(uuid, text, text, jsonb, timestamptz) to anon, authenticated;
-grant execute on function public.list_app_sidekick_logs(uuid, uuid) to anon, authenticated;
 grant execute on function public.list_team_user_activity(uuid) to anon, authenticated;
 grant execute on function public.update_app_user_role(uuid, uuid, text) to anon, authenticated;
 grant execute on function public.update_app_user_pin(uuid, uuid, text) to anon, authenticated;
@@ -1081,7 +971,6 @@ grant execute on function public.update_app_user_pin(uuid, uuid, text) to anon, 
 alter table public.trial_files replica identity full;
 alter table public.gipod_codes replica identity full;
 alter table public.app_file_logs replica identity full;
-alter table public.app_sidekick_logs replica identity full;
 alter table public.coordinator_auto_queue replica identity full;
 alter table public.app_shipment_activity replica identity full;
 alter table public.app_eod_cleanups replica identity full;

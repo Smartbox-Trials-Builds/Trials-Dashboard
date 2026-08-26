@@ -34,7 +34,6 @@ let teamActivity = [];
 let selectedProfileId = '';
 let profileUser = null;
 let profileActivity = [];
-let profileSidekickLogs = [];
 let fileLogs = [];
 let activeFileTab = 'details';
 let view = 'dashboard';
@@ -54,7 +53,6 @@ let adminViewRole = '';
 let realtimeChannel = null;
 let presencePollTimer = null;
 let heartbeatTimer = null;
-let sidekickLogTimer = null;
 let reconnectTimer = null;
 let recoveryPromise = null;
 let claimWindowTimers = new Map();
@@ -573,8 +571,6 @@ async function logout() {
   unsubscribeRealtime();
   stopPresencePolling();
   stopHeartbeat();
-  stopSidekickLogDrain();
-  if (window.dashboardSidekick?.clearProfile) await window.dashboardSidekick.clearProfile().catch(() => {});
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -591,7 +587,6 @@ async function logout() {
   adminViewRole = '';
   view = 'dashboard';
   users = [];
-  profileSidekickLogs = [];
   renderLogin();
 }
 
@@ -699,14 +694,6 @@ function isRecoverableSupabaseError(error) {
     message.includes('connection') ||
     message.includes('websocket') ||
     message.includes('abort');
-}
-
-function isMissingSidekickLogSchema(error) {
-  const message = `${error?.message || error?.details || error?.hint || ''}`.toLowerCase();
-  return ['pgrst202', '42p01', '42883'].includes(String(error?.code || '').toLowerCase()) ||
-    message.includes('list_app_sidekick_logs') ||
-    message.includes('app_sidekick_logs') ||
-    message.includes('log_app_sidekick_action');
 }
 
 async function recoverSupabaseConnection(reason = 'Connection recovered') {
@@ -860,17 +847,14 @@ async function loadUsers(shouldRender = true) {
 async function loadProfile(userId = selectedProfileId || currentUser.id) {
   if (!userId) return;
   selectedProfileId = userId;
-  const [profileResult, activityResult, sidekickResult] = await Promise.all([
+  const [profileResult, activityResult] = await Promise.all([
     supabase.rpc('get_app_user_profile', { p_actor_id: currentUser.id, p_user_id: userId }),
-    supabase.rpc('list_app_user_activity', { p_actor_id: currentUser.id, p_user_id: userId }),
-    supabase.rpc('list_app_sidekick_logs', { p_actor_id: currentUser.id, p_user_id: userId })
+    supabase.rpc('list_app_user_activity', { p_actor_id: currentUser.id, p_user_id: userId })
   ]);
   if (profileResult.error) return showError(profileResult.error);
   if (activityResult.error) return showError(activityResult.error);
-  if (sidekickResult.error && !isMissingSidekickLogSchema(sidekickResult.error)) return showError(sidekickResult.error);
   profileUser = profileResult.data;
   profileActivity = activityResult.data || [];
-  profileSidekickLogs = sidekickResult.error ? [] : sidekickResult.data || [];
 }
 
 async function loadFileLogs(fileId) {
@@ -939,49 +923,6 @@ function stopHeartbeat() {
   if (!heartbeatTimer) return;
   clearInterval(heartbeatTimer);
   heartbeatTimer = null;
-}
-
-function startSidekickLogDrain() {
-  stopSidekickLogDrain();
-  if (!window.dashboardSidekick?.takeLogs) return;
-  sidekickLogTimer = window.setInterval(drainSidekickLogs, 5000);
-  drainSidekickLogs();
-}
-
-function stopSidekickLogDrain() {
-  if (!sidekickLogTimer) return;
-  clearInterval(sidekickLogTimer);
-  sidekickLogTimer = null;
-}
-
-async function drainSidekickLogs() {
-  if (!currentUser?.id || !supabase || !window.dashboardSidekick?.takeLogs) return;
-  const logs = await window.dashboardSidekick.takeLogs().catch((error) => {
-    console.error('Unable to read Sidekick logs:', error);
-    return [];
-  });
-  if (!Array.isArray(logs) || !logs.length) return;
-
-  const rows = logs
-    .filter((log) => log.userId)
-    .map((log) => ({
-      user_id: log.userId,
-      action: log.action || 'Sidekick action',
-      detail: log.detail || '',
-      metadata: log.metadata || {},
-      occurred_at: log.occurredAt || new Date().toISOString()
-    }));
-  if (!rows.length) return;
-
-  const { error } = await withSupabaseRetry(() => supabase.from('app_sidekick_logs').insert(rows));
-  if (error) {
-    console.error('Sidekick log insert failed:', error);
-    return;
-  }
-  if (view === 'profile' && selectedProfileId && rows.some((row) => row.user_id === selectedProfileId)) {
-    await loadProfile(selectedProfileId);
-    renderProfile();
-  }
 }
 
 function statusClass(file) {
@@ -1266,21 +1207,6 @@ function dismissPrepNotification(fileId) {
   activePrepNotifications.delete(fileId);
 }
 
-function sendSidekickPrepNotification(file) {
-  if (!window.dashboardSidekick?.notifyPrep) return;
-  const client = `${file.last || ''}, ${file.first || ''}`.trim().replace(/^,\s*/, '');
-  const crmNumber = crmRecordNumber(file.crm);
-  window.dashboardSidekick.notifyPrep({
-    id: file.id,
-    title: 'Ready for prep',
-    message: `${client || 'A client file'} is ready for prep${file.device ? ` on ${file.device}` : ''}.`,
-    client,
-    device: file.device || '',
-    loan: file.loan || '',
-    crm: crmNumber || file.crm || ''
-  }).catch((error) => console.error('Sidekick notification bridge failed:', error));
-}
-
 function showPrepNotification(file) {
   if (activePrepNotifications.has(file.id) || seenPrepNotifications.has(file.id)) return;
   seenPrepNotifications.add(file.id);
@@ -1300,7 +1226,6 @@ function showPrepNotification(file) {
     <button class="btn" data-action="claim-prep-notification" data-id="${file.id}" type="button">Claim</button>
   `;
   notificationHost().appendChild(toast);
-  sendSidekickPrepNotification(file);
   const timer = setTimeout(() => dismissPrepNotification(file.id), 10000);
   activePrepNotifications.set(file.id, { element: toast, timer });
 }
@@ -1558,43 +1483,6 @@ function profileCompletedCount(kind) {
   }).length;
 }
 
-function sidekickLogDetail(log) {
-  const detail = log.detail || '';
-  const metadata = log.metadata && typeof log.metadata === 'object' ? log.metadata : {};
-  const target = metadata.target || metadata.button || metadata.view || '';
-  return [detail, target && `Target: ${target}`].filter(Boolean).join(' | ') || 'none';
-}
-
-function renderSidekickProfilePanel() {
-  const rows = profileSidekickLogs.map((log) => `
-    <tr>
-      <td>${esc(formatDateTime(log.occurred_at || log.created_at))}</td>
-      <td>${esc(log.action || 'Sidekick action')}</td>
-      <td>${esc(sidekickLogDetail(log))}</td>
-    </tr>
-  `);
-
-  return `
-    <section class="profile-panel">
-      <div class="preprep-head">
-        <div>
-          <h3>Sidekick Link</h3>
-          <div class="muted">Link the browser Sidekick to this dashboard profile, then Sidekick clicks and workflow actions will appear below.</div>
-        </div>
-        <button class="btn secondary" data-action="link-sidekick-profile" data-id="${profileUser.id}" type="button">Link Sidekick to this profile</button>
-      </div>
-      <div id="sidekickLinkMessage" class="muted">Open this profile in the dashboard, click the link button, then use the Sidekick link control in the extension.</div>
-      <h3>Sidekick Log</h3>
-      <div class="table-wrap">
-        <table class="table">
-          <thead><tr><th>Time</th><th>Action</th><th>Detail</th></tr></thead>
-          <tbody>${tableRows(rows, 'No Sidekick actions logged yet.', 3)}</tbody>
-        </table>
-      </div>
-    </section>
-  `;
-}
-
 function renderProfile() {
   if (!$('profileBody')) return;
   if (!profileUser) {
@@ -1656,7 +1544,6 @@ function renderProfile() {
         </div>
         <div class="footer"><button class="btn" data-action="change-own-pin" type="button">Change PIN</button></div>
       </section>` : ''}
-      ${renderSidekickProfilePanel()}
     </div>
   `;
 }
@@ -1845,7 +1732,6 @@ async function deleteUser(userId) {
     selectedProfileId = '';
     profileUser = null;
     profileActivity = [];
-    profileSidekickLogs = [];
     view = canView('users') ? 'users' : firstAllowedView();
   }
   await loadSpecialists();
@@ -1911,29 +1797,6 @@ async function saveProfileSchedule(userId) {
   profileUser = data;
   alert('Schedule saved.');
   renderProfile();
-}
-
-async function linkSidekickProfile(userId) {
-  if (!window.dashboardSidekick?.setProfile) {
-    alert('Sidekick linking is only available in the installed dashboard app.');
-    return;
-  }
-  if (!profileUser || profileUser.id !== userId) return;
-  const linked = await window.dashboardSidekick.setProfile({
-    id: profileUser.id,
-    name: userFullName(profileUser),
-    role: profileUser.role
-  }).catch((error) => {
-    console.error('Unable to link Sidekick profile:', error);
-    return null;
-  });
-  const message = $('sidekickLinkMessage');
-  if (message) {
-    message.className = linked ? 'success' : 'error';
-    message.textContent = linked
-      ? `${userFullName(profileUser)} is ready to link in CRM Sidekick. Open Sidekick and choose Link Dashboard Profile.`
-      : 'Unable to prepare the Sidekick link.';
-  }
 }
 
 async function saveTrainedDevices(userId) {
@@ -2645,14 +2508,13 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'link-sidekick-profile', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file'].includes(action)) event.stopPropagation();
+  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
   if (action === 'delete-cleanup') await deleteCleanup(id);
   if (action === 'delete-lead-reports') await deleteLeadReports();
   if (action === 'export-daily-reports') exportDailyReports();
-  if (action === 'link-sidekick-profile') await linkSidekickProfile(id);
   if (action === 'claim-prep-notification') await claimPrepFromNotification(id);
   if (action === 'prepper-filter') setPrepperFilter(target.dataset.name);
   if (action === 'code-filter') setCodeTab(target.dataset.name);
@@ -2735,7 +2597,6 @@ async function startApp() {
     subscribeRealtime();
     startPresencePolling();
     startHeartbeat();
-    startSidekickLogDrain();
   } catch (error) {
     showError(error);
   }

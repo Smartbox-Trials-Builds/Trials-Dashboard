@@ -4,6 +4,5 @@ node_modules/
 dist/
 release/
 app-release/
-sidekick-release/
 .env
 .vite/
