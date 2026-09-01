@@ -13,9 +13,9 @@ const roles = ['Admin', 'Lead', 'Device Coordinator', 'Shipper', 'Device Systems
 const trainedDeviceOptions = ["Wego's", "Talk Pad's", "Grid Pad's", "Zuvo's"];
 const newHireClaimWindowMs = 10000;
 const userManagerRoles = ['Admin', 'Lead'];
-const profileRoles = ['Lead', 'Device Coordinator', 'Device Systems Specialist'];
+const profileRoles = ['Admin', 'Lead', 'Device Coordinator', 'Device Systems Specialist'];
 const roleViews = {
-  Admin: ['leadDashboard', 'dashboard', 'preprep', 'shipping', 'users'],
+  Admin: ['leadDashboard', 'dashboard', 'preprep', 'shipping', 'users', 'profile'],
   Lead: ['leadDashboard', 'dashboard', 'preprep', 'shipping', 'users', 'profile'],
   'Device Systems Specialist': ['dashboard', 'preprep', 'shipping', 'profile'],
   Shipper: ['shipping'],
@@ -182,6 +182,21 @@ function navButton(name, label) {
   return canView(name) ? `<button id="nav-${name}" type="button">${label}</button>` : '';
 }
 
+function headerNav() {
+  return ['leadDashboard', 'dashboard', 'preprep', 'shipping', 'users']
+    .map((name) => {
+      const labels = {
+        leadDashboard: 'Lead Dashboard',
+        dashboard: 'Dashboard',
+        preprep: 'Device Systems',
+        shipping: 'Shipping',
+        users: 'Users'
+      };
+      return navButton(name, labels[name]);
+    })
+    .join('');
+}
+
 function adminRolePreviewControl() {
   if (currentUser?.role !== 'Admin') return '';
   return `
@@ -274,18 +289,26 @@ function renderShell() {
   document.documentElement.dataset.theme = theme;
   document.querySelector('#app').innerHTML = `
     <header>
-      <div>
+      <div class="brand-block">
         <div class="eyebrow">Shared operations workspace</div>
         <h1>Trials Dashboard</h1>
       </div>
+      <nav class="nav header-nav" aria-label="Primary navigation">
+        ${headerNav()}
+      </nav>
       <div class="header-actions">
-        ${updateControl()}
-        <button id="themeToggle" class="btn ghost header-btn" type="button">${theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>
-        <div class="current-user">
+        <button id="currentUserButton" class="current-user" type="button" title="Open profile">
           <strong>${esc(currentUser?.firstName || '')} ${esc(currentUser?.lastName || '')}</strong>
           <span>${esc(effectiveRole() || '')}${adminViewRole ? ` preview, actual ${esc(currentUser?.role || '')}` : ''}</span>
-        </div>
+        </button>
         ${adminRolePreviewControl()}
+        <details class="settings-menu">
+          <summary class="btn ghost header-btn">Settings</summary>
+          <div class="settings-panel">
+            ${updateControl()}
+            <button id="themeToggle" class="btn secondary" type="button">${theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>
+          </div>
+        </details>
         <button id="logoutButton" class="btn ghost header-btn" type="button">Log out</button>
         <div class="connection">
           <span id="connectionDot" class="dot"></span>
@@ -294,17 +317,6 @@ function renderShell() {
       </div>
     </header>
     <div class="wrap">
-      <aside class="card">
-        <div class="profile"><strong>Shared dashboard</strong><span>Supabase live queue</span></div>
-        <nav class="nav">
-          ${navButton('leadDashboard', '▤ Lead Dashboard')}
-          ${navButton('dashboard', '▦ Dashboard')}
-          ${navButton('preprep', '⇄ Device Systems Dashboard')}
-          ${navButton('shipping', '▣ Shipping')}
-          ${navButton('users', '◎ User Management')}
-          ${navButton('profile', '◌ Profile')}
-        </nav>
-      </aside>
       <main class="main">
         <section class="card toolbar">
           <div><h2 id="viewTitle"></h2><div class="muted" id="viewSub"></div></div>
@@ -397,12 +409,12 @@ function renderShell() {
   bindUpdateControl();
   if ($('nav-leadDashboard')) $('nav-leadDashboard').addEventListener('click', () => setView('leadDashboard'));
   if ($('nav-dashboard')) $('nav-dashboard').addEventListener('click', () => setView('dashboard'));
-  $('themeToggle').addEventListener('click', toggleTheme);
+  if ($('themeToggle')) $('themeToggle').addEventListener('click', toggleTheme);
   if ($('nav-preprep')) $('nav-preprep').addEventListener('click', () => setView('preprep'));
   if ($('nav-shipping')) $('nav-shipping').addEventListener('click', () => setView('shipping'));
   $('logoutButton').addEventListener('click', logout);
   if ($('nav-users')) $('nav-users').addEventListener('click', () => setView('users'));
-  if ($('nav-profile')) $('nav-profile').addEventListener('click', () => openProfile(currentUser.id));
+  if ($('currentUserButton')) $('currentUserButton').addEventListener('click', () => openProfile(currentUser.id));
   if ($('adminViewRole')) $('adminViewRole').addEventListener('change', setAdminViewRole);
   if ($('refreshUsersButton')) $('refreshUsersButton').addEventListener('click', loadUsers);
   if ($('createUserForm')) $('createUserForm').addEventListener('submit', createUser);
@@ -1150,7 +1162,7 @@ function renderStats() {
 }
 
 function actionButtons(file) {
-  return `<div class="actions"><button class="btn small secondary" data-action="open-file" data-id="${file.id}">${canEditFiles() ? 'View / Edit' : 'View'}</button><a class="btn small ghost" href="${esc(file.crm || '#')}" target="_blank" rel="noopener">CRM</a></div>`;
+  return `<div class="actions"><button class="btn small secondary" data-action="open-file" data-id="${file.id}">${canEditFiles() ? 'View / Edit' : 'View'}</button><a class="btn small ghost" data-action="open-crm" href="${esc(file.crm || '#')}" target="_blank" rel="noopener">CRM</a></div>`;
 }
 
 function statusStepFor(file) {
@@ -1195,13 +1207,38 @@ function fileCard(file, name) {
   </article>`;
 }
 
+function fileClaimClass(file) {
+  if (file.status.startsWith('Being prepped by ')) return 'claimed-prep';
+  if (file.status.startsWith("Being QA'd by ")) return 'claimed-qa';
+  return '';
+}
+
+function fileLine(file, name) {
+  const accessories = fileAccessories(file);
+  const workflow = workflowButtons(file);
+  return `<article class="file-line ${name === 'Expedites' ? 'ex' : ''} ${fileClaimClass(file)}" data-action="open-file" data-id="${file.id}">
+    <div class="file-line-main">
+      <b>${esc(file.last)}, ${esc(file.first)}</b>
+      <span>${esc(file.device || 'Device not listed')}</span>
+    </div>
+    <div class="file-line-cell"><span>Loan</span><b>${esc(file.loan || 'none')}</b></div>
+    <div class="file-line-cell"><span>Ship by</span><b>${esc(formatDate(file.expires))}</b></div>
+    <div class="file-line-cell"><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
+    <div class="file-line-cell wide"><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
+    <div class="file-line-cell"><span>Prep / QA</span><b>${esc([file.preppedBy && `Prep ${file.preppedBy}`, file.qaBy && `QA ${file.qaBy}`].filter(Boolean).join(' | ') || 'none')}</b></div>
+    <div class="file-line-status"><span class="pill ${statusClass(file)}">${esc(file.status)}</span></div>
+    <div class="file-line-actions">${workflow}${actionButtons(file)}</div>
+  </article>`;
+}
+
 function renderLanes(target, list, names = laneNames) {
   const host = $(target);
   const layout = currentDashboardLayout();
   host.classList.toggle('classic-layout', layout === 'classic');
   host.innerHTML = names.map((name) => {
     const laneFiles = list.filter((file) => name === 'Shipped' ? file.status === 'Shipped' : file.status !== 'Shipped' && file.lane === name);
-    return `<div class="lane"><h3>${name}<span class="count">${laneFiles.length}</span></h3>${laneFiles.map((file) => fileCard(file, name)).join('') || '<div class="empty">No files</div>'}</div>`;
+    const fileRenderer = layout === 'classic' ? fileLine : fileCard;
+    return `<div class="lane"><h3>${name}<span class="count">${laneFiles.length}</span></h3>${laneFiles.map((file) => fileRenderer(file, name)).join('') || '<div class="empty">No files</div>'}</div>`;
   }).join('');
 }
 
@@ -2642,7 +2679,7 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
+  if (['open-file', 'open-crm', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
