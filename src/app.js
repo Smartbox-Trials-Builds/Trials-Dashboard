@@ -1948,8 +1948,8 @@ async function saveDashboardLayout(userId) {
   const dashboardLayout = normalizeDashboardLayout(selected?.value);
   const { data, error } = await supabase.rpc('update_app_user_dashboard_layout', {
     p_actor_id: currentUser.id,
-    p_user_id: userId,
-    p_dashboard_layout: dashboardLayout
+    p_dashboard_layout: dashboardLayout,
+    p_user_id: userId
   });
   if (error) return showError(error);
   profileUser = { ...profileUser, ...data, dashboardLayout: normalizeDashboardLayout(data?.dashboardLayout) };

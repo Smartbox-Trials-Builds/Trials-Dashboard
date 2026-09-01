@@ -605,7 +605,8 @@ end;
 $$;
 
 drop function if exists public.update_app_user_dashboard_layout(uuid, text);
-create or replace function public.update_app_user_dashboard_layout(p_actor_id uuid, p_user_id uuid, p_dashboard_layout text)
+drop function if exists public.update_app_user_dashboard_layout(uuid, uuid, text);
+create or replace function public.update_app_user_dashboard_layout(p_actor_id uuid, p_dashboard_layout text, p_user_id uuid)
 returns jsonb
 language plpgsql
 security definer
@@ -1071,7 +1072,7 @@ grant execute on function public.list_device_specialists() to anon, authenticate
 grant execute on function public.list_device_coordinators() to anon, authenticated;
 grant execute on function public.get_app_user_profile(uuid, uuid) to anon, authenticated;
 grant execute on function public.update_own_app_user_pin(uuid, text, text) to anon, authenticated;
-grant execute on function public.update_app_user_dashboard_layout(uuid, uuid, text) to anon, authenticated;
+grant execute on function public.update_app_user_dashboard_layout(uuid, text, uuid) to anon, authenticated;
 grant execute on function public.update_app_user_schedule(uuid, uuid, jsonb) to anon, authenticated;
 grant execute on function public.update_app_user_trained_devices(uuid, uuid, jsonb, boolean) to anon, authenticated;
 grant execute on function public.list_app_user_activity(uuid, uuid) to anon, authenticated;
