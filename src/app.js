@@ -5,6 +5,10 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || localStorage.getItem('
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || localStorage.getItem('supabaseAnonKey') || '';
 
 const laneNames = ['Expedites', 'Funded Rentals', 'Ship Requested', 'Accessories', 'Daily Queue'];
+const dashboardLayouts = {
+  lanes: 'Lane columns',
+  classic: 'Classic stacked'
+};
 const roles = ['Admin', 'Lead', 'Device Coordinator', 'Shipper', 'Device Systems Specialist'];
 const trainedDeviceOptions = ["Wego's", "Talk Pad's", "Grid Pad's", "Zuvo's"];
 const newHireClaimWindowMs = 10000;
@@ -51,7 +55,10 @@ let theme = localStorage.getItem('theme') || 'light';
 let currentUser = null;
 let adminViewRole = '';
 let realtimeChannel = null;
-let presencePollTimer = null;
+let presenceChannel = null;
+let loginStatusRefreshTimer = null;
+let presenceSynced = false;
+let onlineUserIds = new Set();
 let heartbeatTimer = null;
 let reconnectTimer = null;
 let recoveryPromise = null;
@@ -105,6 +112,15 @@ function readRememberedUser() {
 
 function persistCurrentUser(user) {
   currentUser = user;
+  if (user?.dashboardLayout) localStorage.setItem('dashboardLayout', normalizeDashboardLayout(user.dashboardLayout));
+}
+
+function normalizeDashboardLayout(value) {
+  return value === 'classic' ? 'classic' : 'lanes';
+}
+
+function currentDashboardLayout() {
+  return normalizeDashboardLayout(currentUser?.dashboardLayout || localStorage.getItem('dashboardLayout') || 'lanes');
 }
 
 function effectiveRole() {
@@ -569,7 +585,8 @@ async function markCurrentUserLoggedIn(isLoggedIn, keepalive = false) {
 async function logout() {
   await markCurrentUserLoggedIn(false);
   unsubscribeRealtime();
-  stopPresencePolling();
+  unsubscribePresence();
+  stopLoginStatusRefresh();
   stopHeartbeat();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -587,6 +604,8 @@ async function logout() {
   adminViewRole = '';
   view = 'dashboard';
   users = [];
+  onlineUserIds = new Set();
+  presenceSynced = false;
   renderLogin();
 }
 
@@ -701,9 +720,12 @@ async function recoverSupabaseConnection(reason = 'Connection recovered') {
   recoveryPromise = (async () => {
     setConnection('Refreshing', 'Reconnecting');
     unsubscribeRealtime();
+    unsubscribePresence();
     createSupabaseClient();
     if (currentUser?.id) await markCurrentUserLoggedIn(true);
     subscribeRealtime();
+    subscribePresence();
+    await refreshLoginStatuses(false);
     setConnection('Live', reason);
   })().finally(() => {
     recoveryPromise = null;
@@ -830,10 +852,33 @@ function rowToUser(row) {
     trainedDevices: row.trained_devices || [],
     isNewHire: Boolean(row.is_new_hire),
     isActive: row.is_active,
-    isLoggedIn: row.is_logged_in,
+    isLoggedIn: isUserOnline(row.id, row.is_logged_in),
     lastLoginAt: row.last_login_at || '',
-    lastLogoutAt: row.last_logout_at || ''
+    lastLogoutAt: row.last_logout_at || '',
+    dashboardLayout: normalizeDashboardLayout(row.dashboard_layout)
   };
+}
+
+function isUserOnline(userId, fallback = false) {
+  return presenceSynced ? onlineUserIds.has(userId) : Boolean(fallback);
+}
+
+function applyLoginPresenceToUsers() {
+  users = users.map((user) => ({ ...user, isLoggedIn: isUserOnline(user.id, user.isLoggedIn) }));
+}
+
+function mergeLoginStatusRows(rows = []) {
+  const statusById = new Map(rows.map((row) => [row.id, row]));
+  users = users.map((user) => {
+    const status = statusById.get(user.id);
+    if (!status) return { ...user, isLoggedIn: isUserOnline(user.id, user.isLoggedIn) };
+    return {
+      ...user,
+      isLoggedIn: isUserOnline(user.id, status.is_logged_in),
+      lastLoginAt: status.last_login_at || '',
+      lastLogoutAt: status.last_logout_at || ''
+    };
+  });
 }
 
 async function loadUsers(shouldRender = true) {
@@ -854,6 +899,7 @@ async function loadProfile(userId = selectedProfileId || currentUser.id) {
   if (profileResult.error) return showError(profileResult.error);
   if (activityResult.error) return showError(activityResult.error);
   profileUser = profileResult.data;
+  if (profileUser) profileUser.dashboardLayout = normalizeDashboardLayout(profileUser.dashboardLayout);
   profileActivity = activityResult.data || [];
 }
 
@@ -889,18 +935,78 @@ function unsubscribeRealtime() {
   realtimeChannel = null;
 }
 
-function startPresencePolling() {
-  stopPresencePolling();
-  if (!canManageUsers()) return;
-  presencePollTimer = window.setInterval(() => {
-    loadUsers(true);
-  }, 10000);
+function currentPresenceKey() {
+  const suffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${currentUser.id}-${suffix}`;
 }
 
-function stopPresencePolling() {
-  if (!presencePollTimer) return;
-  clearInterval(presencePollTimer);
-  presencePollTimer = null;
+function applyPresenceState() {
+  if (!presenceChannel) return;
+  const state = presenceChannel.presenceState();
+  const online = new Set();
+  Object.values(state).flat().forEach((entry) => {
+    if (entry?.user_id) online.add(entry.user_id);
+  });
+  onlineUserIds = online;
+  presenceSynced = true;
+  applyLoginPresenceToUsers();
+  if (view === 'users') renderUsers();
+  if (view === 'leadDashboard') renderLeadDashboard();
+}
+
+function subscribePresence() {
+  unsubscribePresence();
+  if (!currentUser?.id) return;
+  presenceSynced = false;
+  presenceChannel = supabase
+    .channel('trials-dashboard-presence', { config: { presence: { key: currentPresenceKey() } } })
+    .on('presence', { event: 'sync' }, applyPresenceState)
+    .on('presence', { event: 'join' }, applyPresenceState)
+    .on('presence', { event: 'leave' }, applyPresenceState)
+    .subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await presenceChannel.track({
+          user_id: currentUser.id,
+          name: currentUserName(),
+          role: currentUser.role,
+          online_at: new Date().toISOString()
+        });
+      }
+      if (status === 'CHANNEL_ERROR') scheduleRealtimeReconnect('Presence reconnecting');
+      if (status === 'TIMED_OUT') scheduleRealtimeReconnect('Presence timed out');
+    });
+}
+
+function unsubscribePresence() {
+  if (!supabase || !presenceChannel) return;
+  presenceChannel.untrack().catch(() => {});
+  supabase.removeChannel(presenceChannel);
+  presenceChannel = null;
+  presenceSynced = false;
+  onlineUserIds = new Set();
+}
+
+async function refreshLoginStatuses(shouldRender = true) {
+  if (!canManageUsers()) return;
+  const { data, error } = await withSupabaseRetry(() => supabase.rpc('list_app_user_login_statuses', { p_actor_id: currentUser.id }));
+  if (error) return showError(error);
+  mergeLoginStatusRows(data || []);
+  if (shouldRender && view === 'users') renderUsers();
+  if (shouldRender && view === 'leadDashboard') renderLeadDashboard();
+}
+
+function startLoginStatusRefresh() {
+  stopLoginStatusRefresh();
+  if (!canManageUsers()) return;
+  loginStatusRefreshTimer = window.setInterval(() => {
+    refreshLoginStatuses(true);
+  }, 60000);
+}
+
+function stopLoginStatusRefresh() {
+  if (!loginStatusRefreshTimer) return;
+  clearInterval(loginStatusRefreshTimer);
+  loginStatusRefreshTimer = null;
 }
 
 function startHeartbeat() {
@@ -1090,7 +1196,10 @@ function fileCard(file, name) {
 }
 
 function renderLanes(target, list, names = laneNames) {
-  $(target).innerHTML = names.map((name) => {
+  const host = $(target);
+  const layout = currentDashboardLayout();
+  host.classList.toggle('classic-layout', layout === 'classic');
+  host.innerHTML = names.map((name) => {
     const laneFiles = list.filter((file) => name === 'Shipped' ? file.status === 'Shipped' : file.status !== 'Shipped' && file.lane === name);
     return `<div class="lane"><h3>${name}<span class="count">${laneFiles.length}</span></h3>${laneFiles.map((file) => fileCard(file, name)).join('') || '<div class="empty">No files</div>'}</div>`;
   }).join('');
@@ -1504,8 +1613,17 @@ function renderProfile() {
   const claimed = profileClaimedJobs();
   const trainedDevices = trainedDeviceList(profileUser);
   const canToggleNewHire = canActivateNewHireMode();
+  const selectedLayout = normalizeDashboardLayout(profileUser.dashboardLayout);
   $('profileBody').innerHTML = `
     <div class="profile-grid">
+      ${profileUser.id === currentUser.id ? `
+      <section class="profile-panel">
+        <h3>Dashboard Layout</h3>
+        <div class="layout-options" role="radiogroup" aria-label="Dashboard layout">
+          ${Object.entries(dashboardLayouts).map(([value, label]) => `<label class="check-card"><input type="radio" name="dashboardLayout" value="${esc(value)}" ${selectedLayout === value ? 'checked' : ''}> <span>${esc(label)}</span></label>`).join('')}
+        </div>
+        <div class="footer"><button class="btn" data-action="save-dashboard-layout" data-id="${profileUser.id}" type="button">Save layout</button></div>
+      </section>` : ''}
       ${isCoordinatorProfile ? `
       <section class="profile-panel">
         <h3>Mini Dashboard</h3>
@@ -1822,6 +1940,22 @@ async function saveTrainedDevices(userId) {
   if (userId === currentUser.id) persistCurrentUser({ ...currentUser, trainedDevices: data.trainedDevices || [], isNewHire: Boolean(data.isNewHire) });
   await loadData();
   alert('Training saved.');
+}
+
+async function saveDashboardLayout(userId) {
+  if (userId !== currentUser.id) return;
+  const selected = document.querySelector('input[name="dashboardLayout"]:checked');
+  const dashboardLayout = normalizeDashboardLayout(selected?.value);
+  const { data, error } = await supabase.rpc('update_app_user_dashboard_layout', {
+    p_actor_id: currentUser.id,
+    p_user_id: userId,
+    p_dashboard_layout: dashboardLayout
+  });
+  if (error) return showError(error);
+  profileUser = { ...profileUser, ...data, dashboardLayout: normalizeDashboardLayout(data?.dashboardLayout) };
+  persistCurrentUser({ ...currentUser, dashboardLayout });
+  renderProfile();
+  renderCurrentView();
 }
 
 function laneForLoan(loan, fallback = 'Daily Queue') {
@@ -2508,7 +2642,7 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file'].includes(action)) event.stopPropagation();
+  if (['open-file', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
@@ -2530,6 +2664,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'change-own-pin') await changeOwnPin();
   if (action === 'save-profile-schedule') await saveProfileSchedule(id);
   if (action === 'save-trained-devices') await saveTrainedDevices(id);
+  if (action === 'save-dashboard-layout') await saveDashboardLayout(id);
   if (action === 'file-tab') setFileTab(target.dataset.name);
   if (action === 'unassign-file') await unassignOpenFile();
   if (action === 'close-dialog') target.closest('dialog')?.close();
@@ -2595,7 +2730,8 @@ async function startApp() {
   try {
     await loadData();
     subscribeRealtime();
-    startPresencePolling();
+    subscribePresence();
+    startLoginStatusRefresh();
     startHeartbeat();
   } catch (error) {
     showError(error);

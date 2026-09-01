@@ -350,12 +350,20 @@ input:focus, select:focus, textarea:focus {
   overflow: auto;
 }
 #shippingLanes { grid-template-columns: repeat(6, minmax(220px, 1fr)); }
+.kanban.classic-layout,
+#shippingLanes.classic-layout {
+  grid-template-columns: 1fr;
+  overflow: visible;
+}
 .lane {
   background: #f7f9fc;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
   min-height: 280px;
+}
+.classic-layout .lane {
+  min-height: 0;
 }
 :root[data-theme="dark"] .lane { background: #162033; }
 .lane h3 { display: flex; justify-content: space-between; }
@@ -667,6 +675,11 @@ dialog .section { padding: 22px; }
   gap: 8px;
   margin-bottom: 12px;
 }
+.layout-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 8px;
+}
 .check-card {
   display: flex;
   align-items: center;
@@ -706,6 +719,6 @@ dialog .section { padding: 22px; }
   .stats, .stats.compact { grid-template-columns: 1fr; }
   .toolbar { align-items: flex-start; flex-direction: column; }
   .search { width: 100%; }
-  .form, .auth-form, .camera-fields, .schedule-form, .user-create, .option-grid { grid-template-columns: 1fr; }
+  .form, .auth-form, .camera-fields, .schedule-form, .user-create, .option-grid, .layout-options { grid-template-columns: 1fr; }
   .full { grid-column: auto; }
 }

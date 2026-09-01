@@ -79,6 +79,7 @@ create table if not exists public.app_users (
   weekly_schedule jsonb not null default '{}'::jsonb,
   trained_devices jsonb not null default '[]'::jsonb,
   is_new_hire boolean not null default false,
+  dashboard_layout text not null default 'lanes' check (dashboard_layout in ('lanes', 'classic')),
   pin_hash text not null,
   pin_lookup text not null unique,
   is_active boolean not null default true,
@@ -88,6 +89,24 @@ create table if not exists public.app_users (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.app_users
+add column if not exists dashboard_layout text not null default 'lanes';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'app_users_dashboard_layout_check'
+      and conrelid = 'public.app_users'::regclass
+  ) then
+    alter table public.app_users
+      add constraint app_users_dashboard_layout_check
+      check (dashboard_layout in ('lanes', 'classic'));
+  end if;
+end;
+$$;
 
 create unique index if not exists app_users_name_unique
 on public.app_users (lower(first_name), lower(last_name));
@@ -257,6 +276,7 @@ begin
     'role', matched_user.role,
     'permissions', matched_user.permissions,
     'isNewHire', matched_user.is_new_hire,
+    'dashboardLayout', matched_user.dashboard_layout,
     'isLoggedIn', matched_user.is_logged_in
   );
 end;
@@ -288,6 +308,7 @@ returns table (
   weekly_schedule jsonb,
   trained_devices jsonb,
   is_new_hire boolean,
+  dashboard_layout text,
   is_active boolean,
   is_logged_in boolean,
   last_login_at timestamptz,
@@ -320,6 +341,7 @@ begin
     app_users.weekly_schedule,
     app_users.trained_devices,
     app_users.is_new_hire,
+    app_users.dashboard_layout,
     app_users.is_active,
     app_users.is_logged_in,
     app_users.last_login_at,
@@ -328,6 +350,40 @@ begin
     app_users.updated_at
   from public.app_users
   order by app_users.last_name, app_users.first_name;
+end;
+$$;
+
+drop function if exists public.list_app_user_login_statuses(uuid);
+create or replace function public.list_app_user_login_statuses(p_actor_id uuid)
+returns table (
+  id uuid,
+  is_logged_in boolean,
+  last_login_at timestamptz,
+  last_logout_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not exists (
+    select 1
+    from public.app_users
+    where app_users.id = p_actor_id
+      and app_users.role in ('Admin', 'Lead')
+      and app_users.is_active = true
+  ) then
+    raise exception 'Only Admin and Lead users can view login status.';
+  end if;
+
+  return query
+  select
+    app_users.id,
+    app_users.is_logged_in,
+    app_users.last_login_at,
+    app_users.last_logout_at
+  from public.app_users
+  where app_users.is_active = true;
 end;
 $$;
 
@@ -384,7 +440,8 @@ begin
     'lastName', created_user.last_name,
     'role', created_user.role,
     'permissions', created_user.permissions,
-    'isNewHire', created_user.is_new_hire
+    'isNewHire', created_user.is_new_hire,
+    'dashboardLayout', created_user.dashboard_layout
   );
 exception
   when unique_violation then
@@ -496,7 +553,8 @@ begin
     'permissions', target_user.permissions,
     'weeklySchedule', target_user.weekly_schedule,
     'trainedDevices', target_user.trained_devices,
-    'isNewHire', target_user.is_new_hire
+    'isNewHire', target_user.is_new_hire,
+    'dashboardLayout', target_user.dashboard_layout
   );
 end;
 $$;
@@ -537,11 +595,60 @@ begin
     'permissions', target_user.permissions,
     'weeklySchedule', target_user.weekly_schedule,
     'trainedDevices', target_user.trained_devices,
-    'isNewHire', target_user.is_new_hire
+    'isNewHire', target_user.is_new_hire,
+    'dashboardLayout', target_user.dashboard_layout
   );
 exception
   when unique_violation then
     raise exception 'That PIN is already used by another user.';
+end;
+$$;
+
+drop function if exists public.update_app_user_dashboard_layout(uuid, text);
+create or replace function public.update_app_user_dashboard_layout(p_actor_id uuid, p_user_id uuid, p_dashboard_layout text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_role public.app_user_role;
+  target_user public.app_users;
+begin
+  if p_dashboard_layout not in ('lanes', 'classic') then
+    raise exception 'Invalid dashboard layout.';
+  end if;
+
+  select role into actor_role
+  from public.app_users
+  where id = p_actor_id
+    and is_active = true;
+
+  if p_actor_id <> p_user_id and actor_role not in ('Admin', 'Lead') then
+    raise exception 'Only Admin, Lead, or the profile owner can update this layout.';
+  end if;
+
+  update public.app_users
+  set dashboard_layout = p_dashboard_layout
+  where app_users.id = p_user_id
+    and app_users.is_active = true
+  returning * into target_user;
+
+  if target_user.id is null then
+    raise exception 'User not found.';
+  end if;
+
+  return jsonb_build_object(
+    'id', target_user.id,
+    'firstName', target_user.first_name,
+    'lastName', target_user.last_name,
+    'role', target_user.role,
+    'permissions', target_user.permissions,
+    'weeklySchedule', target_user.weekly_schedule,
+    'trainedDevices', target_user.trained_devices,
+    'isNewHire', target_user.is_new_hire,
+    'dashboardLayout', target_user.dashboard_layout
+  );
 end;
 $$;
 
@@ -581,7 +688,8 @@ begin
     'permissions', target_user.permissions,
     'weeklySchedule', target_user.weekly_schedule,
     'trainedDevices', target_user.trained_devices,
-    'isNewHire', target_user.is_new_hire
+    'isNewHire', target_user.is_new_hire,
+    'dashboardLayout', target_user.dashboard_layout
   );
 end;
 $$;
@@ -637,7 +745,8 @@ begin
     'permissions', target_user.permissions,
     'weeklySchedule', target_user.weekly_schedule,
     'trainedDevices', target_user.trained_devices,
-    'isNewHire', target_user.is_new_hire
+    'isNewHire', target_user.is_new_hire,
+    'dashboardLayout', target_user.dashboard_layout
   );
 end;
 $$;
@@ -955,12 +1064,14 @@ grant execute on function public.register_app_user(text, text, text) to anon, au
 grant execute on function public.login_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.set_app_user_login_status(uuid, boolean) to anon, authenticated;
 grant execute on function public.list_app_users(uuid) to anon, authenticated;
+grant execute on function public.list_app_user_login_statuses(uuid) to anon, authenticated;
 grant execute on function public.create_app_user(uuid, text, text, text, text) to anon, authenticated;
 grant execute on function public.delete_app_user(uuid, uuid) to anon, authenticated;
 grant execute on function public.list_device_specialists() to anon, authenticated;
 grant execute on function public.list_device_coordinators() to anon, authenticated;
 grant execute on function public.get_app_user_profile(uuid, uuid) to anon, authenticated;
 grant execute on function public.update_own_app_user_pin(uuid, text, text) to anon, authenticated;
+grant execute on function public.update_app_user_dashboard_layout(uuid, uuid, text) to anon, authenticated;
 grant execute on function public.update_app_user_schedule(uuid, uuid, jsonb) to anon, authenticated;
 grant execute on function public.update_app_user_trained_devices(uuid, uuid, jsonb, boolean) to anon, authenticated;
 grant execute on function public.list_app_user_activity(uuid, uuid) to anon, authenticated;
