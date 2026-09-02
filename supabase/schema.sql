@@ -26,6 +26,7 @@ create table if not exists public.trial_files (
   device text not null,
   device_number text not null default '',
   gipod_code text not null default '',
+  new_gipod_code text not null default '',
   camera_number text not null default '',
   camera_number_2 text not null default '',
   camera_number_3 text not null default '',
@@ -90,6 +91,9 @@ create table if not exists public.app_users (
   updated_at timestamptz not null default now()
 );
 
+alter table public.trial_files
+add column if not exists new_gipod_code text not null default '';
+
 alter table public.app_users
 add column if not exists dashboard_layout text not null default 'lanes';
 
@@ -110,6 +114,25 @@ $$;
 
 create unique index if not exists app_users_name_unique
 on public.app_users (lower(first_name), lower(last_name));
+
+create table if not exists public.gipod_code_requests (
+  id uuid primary key default gen_random_uuid(),
+  file_id uuid not null references public.trial_files(id) on delete cascade,
+  requester_user_id uuid references public.app_users(id) on delete set null,
+  requester_name text not null default '',
+  first_name text not null default '',
+  last_name text not null default '',
+  device text not null default '',
+  crm_number text not null default '',
+  reason text not null default '',
+  status text not null default 'pending' check (status in ('pending', 'approved')),
+  gipod_code text not null default '',
+  resolved_by_user_id uuid references public.app_users(id) on delete set null,
+  requested_at timestamptz not null default now(),
+  resolved_at timestamptz,
+  updated_at timestamptz not null default now(),
+  unique (file_id, status)
+);
 
 create table if not exists public.app_user_activity (
   id uuid primary key default gen_random_uuid(),
@@ -208,6 +231,189 @@ begin
 end;
 $$;
 
+create or replace function public.request_gipod_code(p_actor_id uuid, p_file_id uuid, p_reason text)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_user public.app_users;
+  target_file public.trial_files;
+  crm_number text;
+  request_id uuid;
+begin
+  select * into actor_user
+  from public.app_users
+  where id = p_actor_id
+    and role = 'Device Coordinator'
+    and is_active = true;
+
+  if actor_user.id is null then
+    raise exception 'Only Device Coordinators can request GIPOD codes.';
+  end if;
+
+  if length(trim(coalesce(p_reason, ''))) = 0 then
+    raise exception 'A request reason is required.';
+  end if;
+
+  select * into target_file
+  from public.trial_files
+  where id = p_file_id;
+
+  if target_file.id is null then
+    raise exception 'File not found.';
+  end if;
+
+  if coalesce(target_file.gipod_code, '') <> '' or coalesce(target_file.new_gipod_code, '') <> '' then
+    raise exception 'This file already has a GIPOD code.';
+  end if;
+
+  crm_number := substring(target_file.crm_link from '([0-9]{5})[^0-9]*$');
+  if crm_number is null then
+    raise exception 'Add a CRM link ending in the 5-digit CRM number before requesting a GIPOD code.';
+  end if;
+
+  insert into public.gipod_code_requests (
+    file_id,
+    requester_user_id,
+    requester_name,
+    first_name,
+    last_name,
+    device,
+    crm_number,
+    reason
+  )
+  values (
+    p_file_id,
+    actor_user.id,
+    trim(actor_user.first_name || ' ' || actor_user.last_name),
+    target_file.first_name,
+    target_file.last_name,
+    target_file.device,
+    crm_number,
+    trim(p_reason)
+  )
+  on conflict (file_id, status)
+  do update set
+    reason = excluded.reason,
+    requester_user_id = excluded.requester_user_id,
+    requester_name = excluded.requester_name,
+    requested_at = now(),
+    updated_at = now()
+  returning id into request_id;
+
+  return request_id;
+end;
+$$;
+
+create or replace function public.approve_gipod_code_request(p_actor_id uuid, p_request_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_user public.app_users;
+  request_row public.gipod_code_requests;
+  claimed_code text;
+  note_text text;
+begin
+  select * into actor_user
+  from public.app_users
+  where id = p_actor_id
+    and role = 'Device Systems Specialist'
+    and is_active = true;
+
+  if actor_user.id is null then
+    raise exception 'Only Device Systems Specialists can approve GIPOD code requests.';
+  end if;
+
+  select * into request_row
+  from public.gipod_code_requests
+  where id = p_request_id
+    and status = 'pending'
+  for update;
+
+  if request_row.id is null then
+    raise exception 'Pending GIPOD request not found.';
+  end if;
+
+  if exists (
+    select 1
+    from public.trial_files
+    where id = request_row.file_id
+      and (coalesce(gipod_code, '') <> '' or coalesce(new_gipod_code, '') <> '')
+  ) then
+    raise exception 'This file already has a GIPOD code.';
+  end if;
+
+  note_text := 'Requested by ' || request_row.requester_name || ': ' || request_row.reason;
+
+  update public.gipod_codes
+  set used_on = request_row.crm_number,
+      used_date = current_date,
+      note = note_text
+  where id = (
+    select id
+    from public.gipod_codes
+    where used_on = ''
+    order by created_at, code
+    limit 1
+    for update skip locked
+  )
+  returning code into claimed_code;
+
+  if claimed_code is null then
+    raise exception 'No available GIPOD codes are left.';
+  end if;
+
+  update public.trial_files
+  set new_gipod_code = claimed_code
+  where id = request_row.file_id
+    and coalesce(gipod_code, '') = ''
+    and coalesce(new_gipod_code, '') = '';
+
+  if not found then
+    update public.gipod_codes
+    set used_on = '',
+        used_date = null,
+        note = ''
+    where code = claimed_code;
+    raise exception 'This file already has a GIPOD code.';
+  end if;
+
+  update public.gipod_code_requests
+  set status = 'approved',
+      gipod_code = claimed_code,
+      resolved_by_user_id = actor_user.id,
+      resolved_at = now(),
+      updated_at = now()
+  where id = request_row.id;
+
+  insert into public.app_file_logs (
+    file_id,
+    actor_user_id,
+    actor_name,
+    action,
+    field_name,
+    old_value,
+    new_value
+  )
+  values (
+    request_row.file_id,
+    actor_user.id,
+    trim(actor_user.first_name || ' ' || actor_user.last_name),
+    'GIPOD request approved',
+    'New GIPOD code',
+    'none',
+    claimed_code
+  );
+
+  return claimed_code;
+end;
+$$;
+
 drop trigger if exists set_trial_files_updated_at on public.trial_files;
 create trigger set_trial_files_updated_at
 before update on public.trial_files
@@ -216,6 +422,11 @@ for each row execute function public.set_updated_at();
 drop trigger if exists set_gipod_codes_updated_at on public.gipod_codes;
 create trigger set_gipod_codes_updated_at
 before update on public.gipod_codes
+for each row execute function public.set_updated_at();
+
+drop trigger if exists set_gipod_code_requests_updated_at on public.gipod_code_requests;
+create trigger set_gipod_code_requests_updated_at
+before update on public.gipod_code_requests
 for each row execute function public.set_updated_at();
 
 drop trigger if exists set_app_users_updated_at on public.app_users;
@@ -916,6 +1127,7 @@ $$;
 
 alter table public.trial_files enable row level security;
 alter table public.gipod_codes enable row level security;
+alter table public.gipod_code_requests enable row level security;
 alter table public.app_users enable row level security;
 alter table public.app_user_activity enable row level security;
 alter table public.app_file_logs enable row level security;
@@ -970,6 +1182,12 @@ with check (true);
 drop policy if exists "Team can delete gipod codes" on public.gipod_codes;
 create policy "Team can delete gipod codes"
 on public.gipod_codes for delete
+to anon, authenticated
+using (true);
+
+drop policy if exists "Team can read gipod code requests" on public.gipod_code_requests;
+create policy "Team can read gipod code requests"
+on public.gipod_code_requests for select
 to anon, authenticated
 using (true);
 
@@ -1054,6 +1272,8 @@ using (true);
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on public.trial_files to anon, authenticated;
 grant select, insert, update, delete on public.gipod_codes to anon, authenticated;
+revoke all on public.gipod_code_requests from anon, authenticated;
+grant select on public.gipod_code_requests to anon, authenticated;
 revoke all on public.app_users from anon, authenticated;
 grant select, insert on public.app_file_logs to anon, authenticated;
 grant select, insert on public.app_user_activity to anon, authenticated;
@@ -1061,6 +1281,8 @@ grant select, insert, delete on public.app_shipment_activity to anon, authentica
 grant select, insert, delete on public.app_eod_cleanups to anon, authenticated;
 grant select, insert, delete on public.coordinator_auto_queue to anon, authenticated;
 grant execute on function public.claim_next_gipod_code(uuid, text, date) to anon, authenticated;
+grant execute on function public.request_gipod_code(uuid, uuid, text) to anon, authenticated;
+grant execute on function public.approve_gipod_code_request(uuid, uuid) to anon, authenticated;
 grant execute on function public.register_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.login_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.set_app_user_login_status(uuid, boolean) to anon, authenticated;
@@ -1082,6 +1304,7 @@ grant execute on function public.update_app_user_pin(uuid, uuid, text) to anon, 
 
 alter table public.trial_files replica identity full;
 alter table public.gipod_codes replica identity full;
+alter table public.gipod_code_requests replica identity full;
 alter table public.app_file_logs replica identity full;
 alter table public.coordinator_auto_queue replica identity full;
 alter table public.app_shipment_activity replica identity full;
@@ -1106,6 +1329,15 @@ begin
         and tablename = 'gipod_codes'
     ) then
       alter publication supabase_realtime add table public.gipod_codes;
+    end if;
+
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'gipod_code_requests'
+    ) then
+      alter publication supabase_realtime add table public.gipod_code_requests;
     end if;
 
     if not exists (

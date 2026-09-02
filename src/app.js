@@ -29,6 +29,7 @@ const statusSteps = {
 let supabase = null;
 let files = [];
 let gipodCodes = [];
+let gipodRequests = [];
 let users = [];
 let specialists = [];
 let coordinators = [];
@@ -355,11 +356,12 @@ function renderShell() {
           <div class="tabs">
             <button id="tab-files" class="tab active" type="button">Files</button>
             <button id="tab-codes" class="tab" type="button">GIPOD Codes</button>
+            <button id="tab-gipod-requests" class="tab" type="button">GIPOD Requests <span id="gipodRequestTabCount" class="count">0</span></button>
           </div>
           <div id="prepFilesPanel">
             <div class="tabs assignment-tabs" id="prepperTabs" aria-label="Filter files by specialist"></div>
             <div class="table-wrap">
-              <table class="table device-systems-table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Device #</th><th>Vocabulary requested</th><th>GIPOD</th><th>Loan</th><th>Lane</th><th>Accessories</th><th>Notes</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
+              <table class="table device-systems-table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Device #</th><th>Vocabulary requested</th><th>GIPOD</th><th>New GIPOD code</th><th>Loan</th><th>Lane</th><th>Accessories</th><th>Notes</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
             </div>
           </div>
           <div id="prepCodesPanel" class="table-wrap hide">
@@ -369,6 +371,9 @@ function renderShell() {
               <button id="code-tab-used" class="tab" data-action="code-filter" data-name="used" type="button">Used <span id="usedCodeCount" class="count">0</span></button>
             </div>
             <table class="table"><thead><tr><th>GIPOD code</th><th>Status</th><th>CRM number used on</th><th>Used date</th><th>Note</th><th></th></tr></thead><tbody id="gipodRows"></tbody></table>
+          </div>
+          <div id="gipodRequestsPanel" class="table-wrap hide">
+            <table class="table"><thead><tr><th>Client</th><th>Device</th><th>CRM #</th><th>Requester</th><th>Reason</th><th>Requested</th><th>Status</th><th></th></tr></thead><tbody id="gipodRequestRows"></tbody></table>
           </div>
         </section>
         <section class="card section hide" id="shippingView">
@@ -426,6 +431,7 @@ function renderShell() {
   $('bulkCodesButton').addEventListener('click', showCodeModal);
   $('tab-files').addEventListener('click', () => setPrepTab('files'));
   $('tab-codes').addEventListener('click', () => setPrepTab('codes'));
+  $('tab-gipod-requests').addEventListener('click', () => setPrepTab('gipod-requests'));
   ['schedules', 'training', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
     if ($(`lead-tab-${tab}`)) $(`lead-tab-${tab}`).addEventListener('click', () => setLeadTab(tab));
   });
@@ -440,6 +446,7 @@ function renderShell() {
   $('codeForm').addEventListener('submit', addGipodCodes);
   $('codeRows').addEventListener('input', previewGipodCodes);
   $('useCodeForm').addEventListener('submit', saveManualGipodUse);
+  $('gipodRequestForm').addEventListener('submit', submitGipodRequest);
   $('editLoan').addEventListener('input', syncLaneFromLoan);
   $('editExpires').addEventListener('input', syncLaneFromShipBy);
   $('addCameraButton').addEventListener('click', addCameraField);
@@ -451,7 +458,8 @@ function dialogs() {
     <dialog id="fileModal"><form method="dialog" id="fileForm" class="section"><div class="dialog-head"><div><div class="eyebrow">Client file</div><h3 id="fileModalTitle">Edit file</h3></div><button class="icon-btn" type="button" data-action="close-dialog" aria-label="Close">x</button></div><input type="hidden" id="editId"><div class="tabs file-tabs"><button id="file-tab-details" class="tab active" data-action="file-tab" data-name="details" type="button">Details</button><button id="file-tab-log" class="tab" data-action="file-tab" data-name="log" type="button">Log</button></div><div id="fileDetailsPanel" class="form">
       <div class="field"><label for="editLast">Last name</label><input id="editLast" required></div><div class="field"><label for="editFirst">First name</label><input id="editFirst" required></div>
       <div class="field"><label for="editDevice">Device</label><input id="editDevice" required></div><div class="field"><label for="editDeviceNumber">Device number</label><input id="editDeviceNumber" placeholder="Device asset number"></div>
-      <div class="field"><label for="editGipod">GIPOD code</label><input id="editGipod" placeholder="GIPOD code"></div><div class="field"><label for="editCameraNumber">Camera 1</label><input id="editCameraNumber" placeholder="Camera asset number"></div>
+      <div class="field"><label for="editGipod">GIPOD code</label><input id="editGipod" placeholder="GIPOD code"></div><div class="field"><label for="editNewGipod">New GIPOD code</label><input id="editNewGipod" placeholder="Approved request code"></div>
+      <div class="field"><label for="editCameraNumber">Camera 1</label><input id="editCameraNumber" placeholder="Camera asset number"></div>
       <div id="cameraFields" class="full camera-fields"></div>
       <div class="full"><button id="addCameraButton" class="btn small secondary" type="button">+ Add camera</button></div>
       <div class="field"><label for="editLoan">Loan type</label><input id="editLoan"></div><div class="field"><label for="editVocab">Vocabulary requested</label><input id="editVocab"></div>
@@ -468,6 +476,11 @@ function dialogs() {
       <div class="field full"><label for="useCodeCrm">5-digit CRM number</label><input id="useCodeCrm" inputmode="numeric" autocomplete="off" pattern="[0-9]{5}" maxlength="5" placeholder="12345" required><span class="muted">Enter exactly five digits.</span></div>
       <div class="field full"><label for="useCodeNote">Note (one required per duplicated CRM number)</label><textarea id="useCodeNote" placeholder="Explain why this CRM number uses another GIPOD code..."></textarea></div>
     </div><div class="footer"><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button class="btn" type="submit">Save usage</button></div></form></dialog>
+
+    <dialog id="gipodRequestModal"><form method="dialog" id="gipodRequestForm" class="section"><div class="dialog-head"><div><div class="eyebrow">GIPOD request</div><h3 id="gipodRequestTitle">Request GIPOD code</h3></div><button class="icon-btn" type="button" data-action="close-dialog" aria-label="Close">x</button></div><input type="hidden" id="gipodRequestFileId"><div class="form">
+      <div class="field full"><label for="gipodRequestReason">Reason</label><textarea id="gipodRequestReason" required placeholder="Why does this file need a new GIPOD code?"></textarea></div>
+      <div id="gipodRequestMessage" class="muted full"></div>
+    </div><div class="footer"><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button class="btn" type="submit">Send request</button></div></form></dialog>
   `;
 }
 
@@ -574,9 +587,9 @@ async function submitAuth(event) {
   await startApp();
 }
 
-async function markCurrentUserLoggedIn(isLoggedIn, keepalive = false) {
-  if (!currentUser?.id || !SUPABASE_URL || !SUPABASE_KEY) return;
-  const payload = { p_user_id: currentUser.id, p_logged_in: isLoggedIn };
+async function markCurrentUserLoggedIn(isLoggedIn, keepalive = false, user = currentUser) {
+  if (!user?.id || !SUPABASE_URL || !SUPABASE_KEY) return;
+  const payload = { p_user_id: user.id, p_logged_in: isLoggedIn };
   if (keepalive && window.fetch) {
     fetch(`${SUPABASE_URL}/rest/v1/rpc/set_app_user_login_status`, {
       method: 'POST',
@@ -595,7 +608,7 @@ async function markCurrentUserLoggedIn(isLoggedIn, keepalive = false) {
 }
 
 async function logout() {
-  await markCurrentUserLoggedIn(false);
+  const userToLogOut = currentUser;
   unsubscribeRealtime();
   unsubscribePresence();
   stopLoginStatusRefresh();
@@ -616,9 +629,13 @@ async function logout() {
   adminViewRole = '';
   view = 'dashboard';
   users = [];
+  gipodRequests = [];
   onlineUserIds = new Set();
   presenceSynced = false;
   renderLogin();
+  if (userToLogOut?.id) {
+    markCurrentUserLoggedIn(false, false, userToLogOut);
+  }
 }
 
 function setAdminViewRole(event) {
@@ -644,6 +661,7 @@ function rowToFile(row) {
     device: row.device,
     deviceNumber: row.device_number || '',
     gipod: row.gipod_code || '',
+    newGipod: row.new_gipod_code || '',
     cameraNumber: row.camera_number || '',
     cameraNumber2: row.camera_number_2 || '',
     cameraNumber3: row.camera_number_3 || '',
@@ -675,6 +693,7 @@ function fileToRow(file) {
     device: file.device,
     device_number: file.deviceNumber || '',
     gipod_code: file.gipod || '',
+    new_gipod_code: file.newGipod || '',
     camera_number: file.cameraNumber || '',
     camera_number_2: file.cameraNumber2 || '',
     camera_number_3: file.cameraNumber3 || '',
@@ -789,14 +808,16 @@ async function loadData() {
   const loadResults = await withSupabaseRetry(() => Promise.all([
     supabase.from('trial_files').select('*').order('created_at', { ascending: true }).order('id', { ascending: true }),
     supabase.from('gipod_codes').select('*').order('created_at', { ascending: true }),
+    supabase.from('gipod_code_requests').select('*').order('requested_at', { ascending: false }),
     supabase.rpc('list_device_specialists'),
     supabase.rpc('list_device_coordinators')
   ]));
   if (!Array.isArray(loadResults)) throw resultError(loadResults) || new Error('Unable to reload queue.');
-  const [fileResult, codeResult, specialistResult, coordinatorResult] = loadResults;
+  const [fileResult, codeResult, requestResult, specialistResult, coordinatorResult] = loadResults;
 
   if (fileResult.error) throw fileResult.error;
   if (codeResult.error) throw codeResult.error;
+  if (requestResult.error) throw requestResult.error;
   if (specialistResult.error) throw specialistResult.error;
   if (coordinatorResult.error) throw coordinatorResult.error;
 
@@ -808,6 +829,7 @@ async function loadData() {
     usedDate: row.used_date || '',
     note: row.note || ''
   }));
+  gipodRequests = (requestResult.data || []).map(rowToGipodRequest);
   specialists = specialistResult.data.map(rowToSpecialist);
   coordinators = coordinatorResult.data.map(rowToSpecialist);
   if (canManageUsers()) {
@@ -868,6 +890,24 @@ function rowToUser(row) {
     lastLoginAt: row.last_login_at || '',
     lastLogoutAt: row.last_logout_at || '',
     dashboardLayout: normalizeDashboardLayout(row.dashboard_layout)
+  };
+}
+
+function rowToGipodRequest(row) {
+  return {
+    id: row.id,
+    fileId: row.file_id || '',
+    firstName: row.first_name || '',
+    lastName: row.last_name || '',
+    device: row.device || '',
+    crmNumber: row.crm_number || '',
+    reason: row.reason || '',
+    requesterUserId: row.requester_user_id || '',
+    requesterName: row.requester_name || 'Unknown requester',
+    status: row.status || 'pending',
+    gipodCode: row.gipod_code || '',
+    requestedAt: row.requested_at || '',
+    resolvedAt: row.resolved_at || ''
   };
 }
 
@@ -932,6 +972,7 @@ function subscribeRealtime() {
     .channel(`trials-dashboard-db-changes-${Date.now()}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'trial_files' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'gipod_codes' }, loadData)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'gipod_code_requests' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'app_shipment_activity' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'app_eod_cleanups' }, loadData)
     .subscribe((status) => {
@@ -1165,6 +1206,20 @@ function actionButtons(file) {
   return `<div class="actions"><button class="btn small secondary" data-action="open-file" data-id="${file.id}">${canEditFiles() ? 'View / Edit' : 'View'}</button><a class="btn small ghost" data-action="open-crm" href="${esc(file.crm || '#')}" target="_blank" rel="noopener">CRM</a></div>`;
 }
 
+function canRequestGipodCode(file) {
+  return effectiveRole() === 'Device Coordinator' && file && !file.gipod && !file.newGipod;
+}
+
+function pendingGipodRequestForFile(fileId) {
+  return gipodRequests.find((request) => request.fileId === fileId && request.status === 'pending');
+}
+
+function gipodRequestButton(file) {
+  if (!canRequestGipodCode(file)) return '';
+  const pending = pendingGipodRequestForFile(file.id);
+  return `<button class="btn small secondary card-step" data-action="request-gipod-code" data-id="${file.id}" type="button" ${pending ? 'disabled' : ''}>${pending ? 'GIPOD requested' : 'Request GIPOD code'}</button>`;
+}
+
 function statusStepFor(file) {
   if (file.status.startsWith('Being prepped by ')) return 'Ready for QA';
   if (file.status.startsWith("Being QA'd by ")) return 'Complete';
@@ -1200,10 +1255,12 @@ function fileCard(file, name) {
     <div>${esc(file.device)}</div>
     <div class="file-meta">${esc(file.loan || 'No loan type')} - Ship by ${esc(formatDate(file.expires))}</div>
     <div class="file-card-details">
+      <div><span>GIPOD</span><b>${esc(file.gipod || 'none')}</b></div>
+      <div><span>New GIPOD code</span><b>${esc(file.newGipod || 'none')}</b></div>
       <div><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
       <div><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
     </div>
-    ${prepQaLog(file)}${workflowButtons(file)}${actionButtons(file)}
+    ${prepQaLog(file)}${gipodRequestButton(file)}${workflowButtons(file)}${actionButtons(file)}
   </article>`;
 }
 
@@ -1215,13 +1272,14 @@ function fileClaimClass(file) {
 
 function fileLine(file, name) {
   const accessories = fileAccessories(file);
-  const workflow = workflowButtons(file);
+  const workflow = `${gipodRequestButton(file)}${workflowButtons(file)}`;
   return `<article class="file-line ${name === 'Expedites' ? 'ex' : ''} ${fileClaimClass(file)}" data-action="open-file" data-id="${file.id}">
     <div class="file-line-main">
       <b>${esc(file.last)}, ${esc(file.first)}</b>
       <span>${esc(file.device || 'Device not listed')}</span>
     </div>
     <div class="file-line-cell"><span>Loan</span><b>${esc(file.loan || 'none')}</b></div>
+    <div class="file-line-cell"><span>New GIPOD</span><b>${esc(file.newGipod || 'none')}</b></div>
     <div class="file-line-cell"><span>Ship by</span><b>${esc(formatDate(file.expires))}</b></div>
     <div class="file-line-cell"><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
     <div class="file-line-cell wide"><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
@@ -1710,6 +1768,8 @@ function duplicateCrmNeedsNote(item) {
 }
 
 function renderPrePrep() {
+  const isRequestTabAllowed = effectiveRole() === 'Device Systems Specialist';
+  if (prepTab === 'gipod-requests' && !isRequestTabAllowed) prepTab = 'files';
   const allRows = stableFileOrder(filteredFiles().filter(isPrePrep));
   const rows = prepperFilter === 'All' ? allRows : allRows.filter((file) => file.prepper === prepperFilter);
   const existingIds = new Set(files.filter(isPrePrep).map((file) => file.id));
@@ -1732,8 +1792,8 @@ function renderPrePrep() {
     const deviceNumberInput = canEditFiles()
       ? `<input class="inline-text-input" data-action="update-device-number" data-id="${file.id}" value="${esc(file.deviceNumber || '')}" placeholder="Device #">`
       : esc(file.deviceNumber || 'none');
-    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${deviceNumberInput}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(formatDate(file.date))}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
-  }).join('') || '<tr><td colspan="15"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
+    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${deviceNumberInput}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.newGipod || 'none')}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(formatDate(file.date))}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
+  }).join('') || '<tr><td colspan="16"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
   const visibleIds = rows.map((file) => file.id);
   const selectAll = $('selectAllFiles');
   selectAll.checked = visibleIds.length > 0 && visibleIds.every((id) => selectedFileIds.has(id));
@@ -1750,6 +1810,25 @@ function renderPrePrep() {
     const missingDuplicateNote = duplicateCrmNeedsNote(item);
     return `<tr class="${missingDuplicateNote ? 'duplicate-crm' : ''}"><td><b>${esc(item.code)}</b></td><td><span class="pill ${item.usedOn ? 'prep' : 'ready'}">${item.usedOn ? 'Used' : 'Available'}</span></td><td>${esc(item.usedOn || 'none')}${missingDuplicateNote ? '<span class="duplicate-warning">Duplicate CRM - add one note</span>' : ''}</td><td>${esc(formatDate(item.usedDate))}</td><td><textarea class="note-input" data-code-note="${item.id}" aria-label="GIPOD note for ${esc(item.code)}">${esc(item.note || '')}</textarea></td><td><div class="actions"><button class="btn small secondary" data-action="save-code-note" data-id="${item.id}" type="button">Save note</button><button class="btn small ${item.usedOn ? 'secondary' : ''}" data-action="use-code" data-id="${item.id}" type="button">${item.usedOn ? 'Edit usage' : 'Use code'}</button></div></td></tr>`;
   }).join('') || `<tr><td colspan="6"><div class="empty">No ${codeTab === 'used' ? 'used' : 'unused'} GIPOD codes.</div></td></tr>`;
+  renderGipodRequests();
+}
+
+function renderGipodRequests() {
+  if ($('gipodRequestTabCount')) $('gipodRequestTabCount').textContent = gipodRequests.filter((request) => request.status === 'pending').length;
+  if (!$('gipodRequestRows')) return;
+  const rows = gipodRequests.map((request) => `
+    <tr>
+      <td><b>${esc(request.lastName)}, ${esc(request.firstName)}</b></td>
+      <td>${esc(request.device || 'Not listed')}</td>
+      <td><span class="crm-number">${esc(request.crmNumber || 'none')}</span></td>
+      <td>${esc(request.requesterName)}</td>
+      <td class="note-preview">${esc(request.reason || 'No reason listed')}</td>
+      <td>${esc(formatDateTime(request.requestedAt))}</td>
+      <td><span class="pill ${request.status === 'approved' ? 'ready' : 'prep'}">${esc(request.status === 'approved' ? `Approved ${request.gipodCode || ''}`.trim() : 'Pending')}</span></td>
+      <td><div class="actions">${request.status === 'pending' ? `<button class="btn small" data-action="approve-gipod-request" data-id="${request.id}" type="button">Approve</button>` : ''}</div></td>
+    </tr>
+  `);
+  $('gipodRequestRows').innerHTML = tableRows(rows, 'No GIPOD code requests yet.', 8);
 }
 
 function renderCurrentView() {
@@ -1780,9 +1859,12 @@ function render() {
     if (viewElement) viewElement.classList.toggle('hide', view !== name);
     if (navElement) navElement.classList.toggle('active', view === name);
   });
-  ['files', 'codes'].forEach((tab) => $(`tab-${tab}`).classList.toggle('active', prepTab === tab));
+  if (prepTab === 'gipod-requests' && effectiveRole() !== 'Device Systems Specialist') prepTab = 'files';
+  ['files', 'codes', 'gipod-requests'].forEach((tab) => $(`tab-${tab}`)?.classList.toggle('active', prepTab === tab));
+  $('tab-gipod-requests')?.classList.toggle('hide', effectiveRole() !== 'Device Systems Specialist');
   $('prepFilesPanel').classList.toggle('hide', prepTab !== 'files');
   $('prepCodesPanel').classList.toggle('hide', prepTab !== 'codes');
+  $('gipodRequestsPanel').classList.toggle('hide', prepTab !== 'gipod-requests');
   $('bulkFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkDeleteFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkCodesButton').classList.toggle('hide', prepTab !== 'codes');
@@ -1810,7 +1892,7 @@ async function openProfile(userId) {
 }
 
 function setPrepTab(tab) {
-  prepTab = tab;
+  prepTab = tab === 'gipod-requests' ? 'gipod-requests' : tab === 'codes' ? 'codes' : 'files';
   render();
 }
 
@@ -2032,6 +2114,7 @@ async function logFileChanges(fileId, current, patch) {
     device: 'Device',
     deviceNumber: 'Device number',
     gipod: 'GIPOD code',
+    newGipod: 'New GIPOD code',
     cameraNumber: 'Camera 1',
     cameraNumber2: 'Camera 2',
     cameraNumber3: 'Camera 3',
@@ -2096,6 +2179,55 @@ async function claimNextGipodCode(fileId) {
     return;
   }
   await addFileLog(fileId, 'GIPOD code assigned', 'GIPOD code', file.gipod || 'none', data);
+  await loadData();
+}
+
+function showGipodRequestModal(fileId) {
+  const file = files.find((item) => item.id === fileId);
+  if (!file || !canRequestGipodCode(file)) return;
+  const crmNumber = crmRecordNumber(file.crm);
+  if (!crmNumber) {
+    alert('Add a CRM link ending in the 5-digit CRM number before requesting a GIPOD code.');
+    return;
+  }
+  $('gipodRequestFileId').value = fileId;
+  $('gipodRequestTitle').textContent = `Request GIPOD code for ${file.last}, ${file.first}`;
+  $('gipodRequestReason').value = '';
+  $('gipodRequestMessage').textContent = `CRM ${crmNumber} will be sent to Device Systems.`;
+  $('gipodRequestModal').showModal();
+  $('gipodRequestReason').focus();
+}
+
+async function submitGipodRequest(event) {
+  event.preventDefault();
+  const fileId = $('gipodRequestFileId').value;
+  const reason = $('gipodRequestReason').value.trim();
+  if (!reason) {
+    $('gipodRequestMessage').className = 'error full';
+    $('gipodRequestMessage').textContent = 'Enter a reason before sending the request.';
+    return;
+  }
+  const { error } = await withSupabaseRetry(() => supabase.rpc('request_gipod_code', {
+    p_actor_id: currentUser.id,
+    p_file_id: fileId,
+    p_reason: reason
+  }));
+  if (error) return showError(error);
+  $('gipodRequestModal').close();
+  await loadData();
+}
+
+async function approveGipodRequest(requestId) {
+  if (effectiveRole() !== 'Device Systems Specialist') return;
+  const request = gipodRequests.find((item) => item.id === requestId);
+  if (!request || request.status !== 'pending') return;
+  if (!confirm(`Approve GIPOD code request for ${request.lastName}, ${request.firstName}?`)) return;
+  const { data, error } = await withSupabaseRetry(() => supabase.rpc('approve_gipod_code_request', {
+    p_actor_id: currentUser.id,
+    p_request_id: requestId
+  }));
+  if (error) return showError(error);
+  alert(`GIPOD code ${data} assigned.`);
   await loadData();
 }
 
@@ -2165,6 +2297,7 @@ function openFile(id) {
     Device: file.device,
     DeviceNumber: file.deviceNumber,
     Gipod: file.gipod,
+    NewGipod: file.newGipod,
     CameraNumber: file.cameraNumber,
     Loan: file.loan,
     Date: file.date,
@@ -2251,6 +2384,7 @@ async function saveFile(event) {
     device: $('editDevice').value.trim(),
     deviceNumber: $('editDeviceNumber').value.trim(),
     gipod: $('editGipod').value.trim(),
+    newGipod: $('editNewGipod').value.trim(),
     cameraNumber: $('editCameraNumber').value.trim(),
     cameraNumber2: $('editCameraNumber2')?.value.trim() || '',
     cameraNumber3: $('editCameraNumber3')?.value.trim() || '',
@@ -2679,7 +2813,7 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'open-crm', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
+  if (['open-file', 'open-crm', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'request-gipod-code', 'approve-gipod-request', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
@@ -2691,6 +2825,8 @@ document.addEventListener('click', async (event) => {
   if (action === 'code-filter') setCodeTab(target.dataset.name);
   if (action === 'use-code') showManualGipodModal(id);
   if (action === 'claim-gipod') await claimNextGipodCode(id);
+  if (action === 'request-gipod-code') showGipodRequestModal(id);
+  if (action === 'approve-gipod-request') await approveGipodRequest(id);
   if (action === 'claim-file') await claimFile(id);
   if (action === 'claim-prep') await claimPrep(id);
   if (action === 'claim-qa') await claimQa(id);

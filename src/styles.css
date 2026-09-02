@@ -42,27 +42,32 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 18px 26px;
+  gap: 14px;
+  padding: 12px 18px;
   background: #172033;
   color: #fff;
+  flex-wrap: nowrap;
 }
 .brand-block {
   flex: 0 0 auto;
+  white-space: nowrap;
 }
 .header-nav {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
+  overflow-x: auto;
 }
 .header-nav button {
   width: auto;
-  padding: 9px 11px;
+  padding: 6px 8px;
   color: #d8e4ff;
   border-color: transparent;
   white-space: nowrap;
+  font-size: 12px;
+  border-radius: 6px;
 }
 .header-nav button:hover {
   background: rgba(255, 255, 255, .1);
@@ -75,7 +80,8 @@ header {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 .update-control {
   display: flex;
@@ -162,8 +168,10 @@ header {
   background: rgba(255, 255, 255, .12);
   border-color: rgba(255, 255, 255, .28);
   color: #fff;
+  padding: 7px 9px;
+  font-size: 12px;
 }
-h1 { font-size: 24px; margin: 0; letter-spacing: 0; }
+h1 { font-size: 20px; margin: 0; letter-spacing: 0; }
 h2, h3 { margin: 0 0 12px; letter-spacing: 0; }
 .eyebrow {
   text-transform: uppercase;
@@ -481,7 +489,7 @@ input:focus, select:focus, textarea:focus {
 .file-card select { width: 100%; }
 .file-line {
   display: grid;
-  grid-template-columns: minmax(180px, 1.25fr) minmax(70px, .55fr) minmax(90px, .55fr) minmax(120px, .75fr) minmax(150px, 1fr) minmax(120px, .8fr) minmax(130px, .8fr) minmax(190px, 1fr);
+  grid-template-columns: minmax(180px, 1.25fr) minmax(70px, .55fr) minmax(90px, .65fr) minmax(90px, .55fr) minmax(120px, .75fr) minmax(150px, 1fr) minmax(120px, .8fr) minmax(130px, .8fr) minmax(190px, 1fr);
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
@@ -632,7 +640,7 @@ dialog .section { padding: 22px; }
   padding: 7px 8px;
 }
 .device-systems-table {
-  min-width: 1620px;
+  min-width: 1740px;
 }
 .compact-text,
 .note-preview {
@@ -846,9 +854,9 @@ dialog .section { padding: 22px; }
   color: var(--brand-dark);
 }
 @media (max-width: 900px) {
-  header { align-items: flex-start; flex-direction: column; }
-  .header-nav { width: 100%; overflow-x: auto; }
-  .header-actions { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+  header { align-items: center; flex-direction: row; overflow-x: auto; }
+  .header-nav { width: auto; overflow-x: visible; }
+  .header-actions { justify-content: flex-end; flex-wrap: nowrap; }
   .update-control { flex-wrap: wrap; }
   .update-control span { max-width: 100%; }
   .current-user { text-align: left; }
