@@ -134,6 +134,273 @@ create table if not exists public.gipod_code_requests (
   unique (file_id, status)
 );
 
+create table if not exists public.device_requests (
+  id uuid primary key default gen_random_uuid(),
+  crm_link text not null default '',
+  device_number text not null default '',
+  internal_serial_number text not null default '',
+  request_type text not null default 'lock_down' check (request_type in ('lock_down', 'unlock', 'app_request')),
+  apps_wanted text not null default '',
+  notes text not null default '',
+  requester_user_id uuid references public.app_users(id) on delete set null,
+  requester_name text not null default '',
+  requester_role text not null default '',
+  status text not null default 'pending' check (status in ('pending', 'claimed', 'complete')),
+  claimed_by_user_id uuid references public.app_users(id) on delete set null,
+  claimed_by_name text not null default '',
+  completed_by_user_id uuid references public.app_users(id) on delete set null,
+  completed_by_name text not null default '',
+  requested_at timestamptz not null default now(),
+  claimed_at timestamptz,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.app_device_request_sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.app_users(id) on delete cascade,
+  token_hash text not null unique,
+  expires_at timestamptz not null,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists app_device_request_sessions_user_id_idx
+on public.app_device_request_sessions (user_id);
+
+create or replace function public.list_device_requests(p_session_token text)
+returns table (
+  id uuid,
+  crm_link text,
+  device_number text,
+  internal_serial_number text,
+  request_type text,
+  apps_wanted text,
+  notes text,
+  requester_user_id uuid,
+  requester_name text,
+  requester_role text,
+  status text,
+  claimed_by_user_id uuid,
+  claimed_by_name text,
+  completed_by_user_id uuid,
+  completed_by_name text,
+  requested_at timestamptz,
+  claimed_at timestamptz,
+  completed_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_role public.app_user_role;
+begin
+  select app_users.role into actor_role
+  from public.app_users
+  join public.app_device_request_sessions on app_device_request_sessions.user_id = app_users.id
+  where app_device_request_sessions.token_hash = pg_catalog.encode(extensions.digest(coalesce(p_session_token, ''), 'sha256'), 'hex')
+    and app_device_request_sessions.expires_at > now()
+    and app_device_request_sessions.revoked_at is null
+    and app_users.role in ('Admin', 'Lead', 'Device Systems Specialist')
+    and app_users.is_active = true;
+
+  if actor_role is null then
+    raise exception 'Only Admin, Lead, and Device Systems Specialist users can view device requests.';
+  end if;
+
+  return query
+  select
+    device_requests.id,
+    device_requests.crm_link,
+    device_requests.device_number,
+    device_requests.internal_serial_number,
+    device_requests.request_type,
+    device_requests.apps_wanted,
+    device_requests.notes,
+    device_requests.requester_user_id,
+    device_requests.requester_name,
+    device_requests.requester_role,
+    device_requests.status,
+    device_requests.claimed_by_user_id,
+    device_requests.claimed_by_name,
+    device_requests.completed_by_user_id,
+    device_requests.completed_by_name,
+    device_requests.requested_at,
+    device_requests.claimed_at,
+    device_requests.completed_at
+  from public.device_requests
+  order by
+    case device_requests.status when 'pending' then 0 when 'claimed' then 1 else 2 end,
+    device_requests.requested_at desc;
+end;
+$$;
+
+create or replace function public.create_device_request(
+  p_session_token text,
+  p_crm_link text,
+  p_device_number text,
+  p_internal_serial_number text,
+  p_request_type text,
+  p_apps_wanted text,
+  p_notes text,
+  p_requested_at timestamptz default now()
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_user public.app_users;
+  request_id uuid;
+begin
+  select app_users.* into actor_user
+  from public.app_users
+  join public.app_device_request_sessions on app_device_request_sessions.user_id = app_users.id
+  where app_device_request_sessions.token_hash = pg_catalog.encode(extensions.digest(coalesce(p_session_token, ''), 'sha256'), 'hex')
+    and app_device_request_sessions.expires_at > now()
+    and app_device_request_sessions.revoked_at is null
+    and app_users.role in ('Admin', 'Lead', 'Device Systems Specialist')
+    and app_users.is_active = true;
+
+  if actor_user.id is null then
+    raise exception 'Only Admin, Lead, and Device Systems Specialist users can create device requests.';
+  end if;
+
+  if length(trim(coalesce(p_crm_link, ''))) = 0
+    or length(trim(coalesce(p_device_number, ''))) = 0
+    or length(trim(coalesce(p_internal_serial_number, ''))) = 0 then
+    raise exception 'CRM link, device number, and internal serial number are required.';
+  end if;
+
+  if p_request_type not in ('lock_down', 'unlock', 'app_request') then
+    raise exception 'Invalid device request type.';
+  end if;
+
+  if p_request_type = 'app_request' and length(trim(coalesce(p_apps_wanted, ''))) = 0 then
+    raise exception 'Apps wanted are required for app requests.';
+  end if;
+
+  insert into public.device_requests (
+    crm_link,
+    device_number,
+    internal_serial_number,
+    request_type,
+    apps_wanted,
+    notes,
+    requester_user_id,
+    requester_name,
+    requester_role,
+    requested_at
+  )
+  values (
+    trim(p_crm_link),
+    trim(p_device_number),
+    trim(p_internal_serial_number),
+    p_request_type,
+    case when p_request_type = 'app_request' then trim(coalesce(p_apps_wanted, '')) else '' end,
+    trim(coalesce(p_notes, '')),
+    actor_user.id,
+    trim(actor_user.first_name || ' ' || actor_user.last_name),
+    actor_user.role::text,
+    p_requested_at
+  )
+  returning id into request_id;
+
+  return request_id;
+end;
+$$;
+
+create or replace function public.claim_device_request(p_session_token text, p_request_id uuid, p_claimed_at timestamptz default now())
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_user public.app_users;
+  claimed_id uuid;
+begin
+  select app_users.* into actor_user
+  from public.app_users
+  join public.app_device_request_sessions on app_device_request_sessions.user_id = app_users.id
+  where app_device_request_sessions.token_hash = pg_catalog.encode(extensions.digest(coalesce(p_session_token, ''), 'sha256'), 'hex')
+    and app_device_request_sessions.expires_at > now()
+    and app_device_request_sessions.revoked_at is null
+    and app_users.role = 'Device Systems Specialist'
+    and app_users.is_active = true;
+
+  if actor_user.id is null then
+    raise exception 'Only Device Systems Specialists can claim device requests.';
+  end if;
+
+  update public.device_requests
+  set status = 'claimed',
+      claimed_by_user_id = actor_user.id,
+      claimed_by_name = trim(actor_user.first_name || ' ' || actor_user.last_name),
+      claimed_at = p_claimed_at
+  where device_requests.id = p_request_id
+    and device_requests.status = 'pending'
+    and device_requests.claimed_by_user_id is null
+  returning id into claimed_id;
+
+  return claimed_id;
+end;
+$$;
+
+create or replace function public.complete_device_request(p_session_token text, p_request_id uuid, p_completed_at timestamptz default now())
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_user public.app_users;
+  request_row public.device_requests;
+begin
+  select app_users.* into actor_user
+  from public.app_users
+  join public.app_device_request_sessions on app_device_request_sessions.user_id = app_users.id
+  where app_device_request_sessions.token_hash = pg_catalog.encode(extensions.digest(coalesce(p_session_token, ''), 'sha256'), 'hex')
+    and app_device_request_sessions.expires_at > now()
+    and app_device_request_sessions.revoked_at is null
+    and app_users.role = 'Device Systems Specialist'
+    and app_users.is_active = true;
+
+  if actor_user.id is null then
+    raise exception 'Only Device Systems Specialists can complete device requests.';
+  end if;
+
+  select * into request_row
+  from public.device_requests
+  where device_requests.id = p_request_id
+    and device_requests.status <> 'complete'
+  for update;
+
+  if request_row.id is null then
+    return null;
+  end if;
+
+  if request_row.claimed_by_user_id is not null and request_row.claimed_by_user_id <> actor_user.id then
+    raise exception 'This request is claimed by another specialist.';
+  end if;
+
+  update public.device_requests
+  set status = 'complete',
+      claimed_by_user_id = coalesce(request_row.claimed_by_user_id, actor_user.id),
+      claimed_by_name = coalesce(nullif(request_row.claimed_by_name, ''), trim(actor_user.first_name || ' ' || actor_user.last_name)),
+      claimed_at = coalesce(request_row.claimed_at, p_completed_at),
+      completed_by_user_id = actor_user.id,
+      completed_by_name = trim(actor_user.first_name || ' ' || actor_user.last_name),
+      completed_at = p_completed_at
+  where device_requests.id = request_row.id;
+
+  return request_row.id;
+end;
+$$;
+
 create table if not exists public.app_user_activity (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.app_users(id) on delete cascade,
@@ -429,6 +696,11 @@ create trigger set_gipod_codes_updated_at
 before update on public.gipod_codes
 for each row execute function public.set_updated_at();
 
+drop trigger if exists set_device_requests_updated_at on public.device_requests;
+create trigger set_device_requests_updated_at
+before update on public.device_requests
+for each row execute function public.set_updated_at();
+
 drop trigger if exists set_app_users_updated_at on public.app_users;
 create trigger set_app_users_updated_at
 before update on public.app_users
@@ -453,6 +725,7 @@ set search_path = ''
 as $$
 declare
   matched_user public.app_users;
+  device_request_token text;
 begin
   if p_pin !~ '^\d{4}$' then
     return null;
@@ -480,6 +753,15 @@ begin
   where app_users.id = matched_user.id
   returning * into matched_user;
 
+  device_request_token := pg_catalog.encode(extensions.gen_random_bytes(32), 'hex');
+
+  insert into public.app_device_request_sessions (user_id, token_hash, expires_at)
+  values (
+    matched_user.id,
+    pg_catalog.encode(extensions.digest(device_request_token, 'sha256'), 'hex'),
+    now() + interval '12 hours'
+  );
+
   return jsonb_build_object(
     'id', matched_user.id,
     'firstName', matched_user.first_name,
@@ -488,7 +770,8 @@ begin
     'permissions', matched_user.permissions,
     'isNewHire', matched_user.is_new_hire,
     'dashboardLayout', matched_user.dashboard_layout,
-    'isLoggedIn', matched_user.is_logged_in
+    'isLoggedIn', matched_user.is_logged_in,
+    'deviceRequestToken', device_request_token
   );
 end;
 $$;
@@ -1128,6 +1411,8 @@ $$;
 alter table public.trial_files enable row level security;
 alter table public.gipod_codes enable row level security;
 alter table public.gipod_code_requests enable row level security;
+alter table public.device_requests enable row level security;
+alter table public.app_device_request_sessions enable row level security;
 alter table public.app_users enable row level security;
 alter table public.app_user_activity enable row level security;
 alter table public.app_file_logs enable row level security;
@@ -1274,6 +1559,8 @@ grant select, insert, update, delete on public.trial_files to anon, authenticate
 grant select, insert, update, delete on public.gipod_codes to anon, authenticated;
 revoke all on public.gipod_code_requests from anon, authenticated;
 grant select on public.gipod_code_requests to anon, authenticated;
+revoke all on public.device_requests from anon, authenticated;
+revoke all on public.app_device_request_sessions from anon, authenticated;
 revoke all on public.app_users from anon, authenticated;
 grant select, insert on public.app_file_logs to anon, authenticated;
 grant select, insert on public.app_user_activity to anon, authenticated;
@@ -1283,6 +1570,10 @@ grant select, insert, delete on public.coordinator_auto_queue to anon, authentic
 grant execute on function public.claim_next_gipod_code(uuid, text, date) to anon, authenticated;
 grant execute on function public.request_gipod_code(uuid, uuid, text, timestamptz) to anon, authenticated;
 grant execute on function public.approve_gipod_code_request(uuid, uuid, timestamptz, date) to anon, authenticated;
+grant execute on function public.list_device_requests(text) to anon, authenticated;
+grant execute on function public.create_device_request(text, text, text, text, text, text, text, timestamptz) to anon, authenticated;
+grant execute on function public.claim_device_request(text, uuid, timestamptz) to anon, authenticated;
+grant execute on function public.complete_device_request(text, uuid, timestamptz) to anon, authenticated;
 grant execute on function public.register_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.login_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.set_app_user_login_status(uuid, boolean) to anon, authenticated;

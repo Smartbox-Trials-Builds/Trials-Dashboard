@@ -11,6 +11,12 @@ const dashboardLayouts = {
 };
 const roles = ['Admin', 'Lead', 'Device Coordinator', 'Shipper', 'Device Systems Specialist'];
 const trainedDeviceOptions = ["Wego's", "Talk Pad's", "Grid Pad's", "Zuvo's"];
+const deviceRequestTypes = {
+  lock_down: 'Lock down',
+  unlock: 'Unlock',
+  app_request: 'App request'
+};
+const deviceRequestCreatorRoles = ['Admin', 'Lead', 'Device Systems Specialist'];
 const newHireClaimWindowMs = 10000;
 const userManagerRoles = ['Admin', 'Lead'];
 const profileRoles = ['Admin', 'Lead', 'Device Coordinator', 'Device Systems Specialist'];
@@ -30,6 +36,7 @@ let supabase = null;
 let files = [];
 let gipodCodes = [];
 let gipodRequests = [];
+let deviceRequests = [];
 let users = [];
 let specialists = [];
 let coordinators = [];
@@ -52,8 +59,11 @@ let seenPrepNotifications = new Set();
 let activeAppNotifications = new Map();
 let seenGipodRequestNotifications = new Set();
 let seenGipodApprovalNotifications = new Set();
+let seenDeviceRequestNotifications = new Set();
+let seenDeviceCompletionNotifications = new Set();
 let suppressExistingPrepNotifications = false;
 let suppressExistingGipodNotifications = true;
+let suppressExistingDeviceRequestNotifications = true;
 let bulkLinks = [];
 let connectionState = 'Connecting';
 let theme = localStorage.getItem('theme') || 'light';
@@ -66,6 +76,7 @@ let presenceSynced = false;
 let onlineUserIds = new Set();
 let heartbeatTimer = null;
 let reconnectTimer = null;
+let deviceRequestPollTimer = null;
 let recoveryPromise = null;
 let claimWindowTimers = new Map();
 let updateState = {
@@ -158,6 +169,10 @@ function canActivateNewHireMode() {
 
 function canEditFiles() {
   return currentUser && effectiveRole() !== 'Device Coordinator';
+}
+
+function canCreateDeviceRequest() {
+  return currentUser && deviceRequestCreatorRoles.includes(effectiveRole());
 }
 
 function hasProfileView() {
@@ -315,6 +330,7 @@ function renderShell() {
           <span>${esc(effectiveRole() || '')}${adminViewRole ? ` preview, actual ${esc(currentUser?.role || '')}` : ''}</span>
         </button>
         ${adminRolePreviewControl()}
+        ${canCreateDeviceRequest() ? '<button id="deviceRequestButton" class="btn header-btn" type="button">Device request</button>' : ''}
         <details class="settings-menu">
           <summary class="btn ghost header-btn">Settings</summary>
           <div class="settings-panel">
@@ -369,6 +385,7 @@ function renderShell() {
             <button id="tab-files" class="tab active" type="button">Files</button>
             <button id="tab-codes" class="tab" type="button">GIPOD Codes</button>
             <button id="tab-gipod-requests" class="tab" type="button">GIPOD Requests <span id="gipodRequestTabCount" class="count">0</span></button>
+            <button id="tab-device-requests" class="tab" type="button">Device Requests <span id="deviceRequestTabCount" class="count">0</span></button>
           </div>
           <div id="prepFilesPanel">
             <div class="tabs assignment-tabs" id="prepperTabs" aria-label="Filter files by specialist"></div>
@@ -386,6 +403,9 @@ function renderShell() {
           </div>
           <div id="gipodRequestsPanel" class="table-wrap hide">
             <table class="table"><thead><tr><th>Client</th><th>Device</th><th>CRM #</th><th>Requester</th><th>Reason</th><th>Requested</th><th>Status</th><th></th></tr></thead><tbody id="gipodRequestRows"></tbody></table>
+          </div>
+          <div id="deviceRequestsPanel" class="table-wrap hide">
+            <table class="table device-requests-table"><thead><tr><th>CRM</th><th>Device #</th><th>Internal serial</th><th>Type</th><th>Apps wanted</th><th>Notes</th><th>Requester</th><th>Requested</th><th>Specialist</th><th>Status</th><th></th></tr></thead><tbody id="deviceRequestRows"></tbody></table>
           </div>
         </section>
         <section class="card section hide" id="shippingView">
@@ -444,6 +464,7 @@ function renderShell() {
   $('tab-files').addEventListener('click', () => setPrepTab('files'));
   $('tab-codes').addEventListener('click', () => setPrepTab('codes'));
   $('tab-gipod-requests').addEventListener('click', () => setPrepTab('gipod-requests'));
+  $('tab-device-requests').addEventListener('click', () => setPrepTab('device-requests'));
   ['schedules', 'training', 'weekly', 'totals', 'cleanups'].forEach((tab) => {
     if ($(`lead-tab-${tab}`)) $(`lead-tab-${tab}`).addEventListener('click', () => setLeadTab(tab));
   });
@@ -459,6 +480,9 @@ function renderShell() {
   $('codeRows').addEventListener('input', previewGipodCodes);
   $('useCodeForm').addEventListener('submit', saveManualGipodUse);
   $('gipodRequestForm').addEventListener('submit', submitGipodRequest);
+  $('deviceRequestForm').addEventListener('submit', submitDeviceRequest);
+  $('deviceRequestType').addEventListener('change', syncDeviceRequestType);
+  $('deviceRequestButton')?.addEventListener('click', showDeviceRequestModal);
   $('editLoan').addEventListener('input', syncLaneFromLoan);
   $('editExpires').addEventListener('input', syncLaneFromShipBy);
   $('addCameraButton').addEventListener('click', addCameraField);
@@ -494,6 +518,16 @@ function dialogs() {
       <div class="field full"><label for="gipodRequestReason">Reason</label><textarea id="gipodRequestReason" required placeholder="Why does this file need a new GIPOD code?"></textarea></div>
       <div id="gipodRequestMessage" class="muted full"></div>
     </div><div class="footer"><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button class="btn" type="submit">Send request</button></div></form></dialog>
+
+    <dialog id="deviceRequestModal"><form method="dialog" id="deviceRequestForm" class="section"><div class="dialog-head"><div><div class="eyebrow">Device request</div><h3>Request lock down, unlock, or apps</h3></div><button class="icon-btn" type="button" data-action="close-dialog" aria-label="Close">x</button></div><div class="form">
+      <div class="field full"><label for="deviceRequestCrm">CRM link</label><input id="deviceRequestCrm" type="url" placeholder="https://crm.example.com/record/..." required></div>
+      <div class="field"><label for="deviceRequestDeviceNumber">Device number</label><input id="deviceRequestDeviceNumber" required></div>
+      <div class="field"><label for="deviceRequestSerial">Device internal serial number</label><input id="deviceRequestSerial" required></div>
+      <div class="field full"><label for="deviceRequestType">Request type</label><select id="deviceRequestType"><option value="lock_down">Lock down</option><option value="unlock">Unlock</option><option value="app_request">App request</option></select></div>
+      <div id="deviceRequestAppsField" class="field full hide"><label for="deviceRequestApps">Apps wanted</label><textarea id="deviceRequestApps" placeholder="List the apps needed..."></textarea></div>
+      <div class="field full"><label for="deviceRequestNotes">Notes</label><textarea id="deviceRequestNotes" placeholder="Optional details..."></textarea></div>
+      <div id="deviceRequestMessage" class="muted full"></div>
+    </div><div class="footer"><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button class="btn" type="submit">Send</button></div></form></dialog>
   `;
 }
 
@@ -624,6 +658,7 @@ async function logout() {
   const userToLogOut = currentUser;
   unsubscribeRealtime();
   unsubscribePresence();
+  stopDeviceRequestPolling();
   stopLoginStatusRefresh();
   stopHeartbeat();
   if (reconnectTimer) {
@@ -651,6 +686,10 @@ async function logout() {
   view = 'dashboard';
   users = [];
   gipodRequests = [];
+  deviceRequests = [];
+  seenDeviceRequestNotifications.clear();
+  seenDeviceCompletionNotifications.clear();
+  suppressExistingDeviceRequestNotifications = true;
   onlineUserIds = new Set();
   presenceSynced = false;
   renderLogin();
@@ -830,20 +869,23 @@ async function loadData() {
     supabase.from('trial_files').select('*').order('created_at', { ascending: true }).order('id', { ascending: true }),
     supabase.from('gipod_codes').select('*').order('created_at', { ascending: true }),
     supabase.from('gipod_code_requests').select('*').order('requested_at', { ascending: false }),
+    supabase.rpc('list_device_requests', { p_session_token: currentUser.deviceRequestToken || '' }),
     supabase.rpc('list_device_specialists'),
     supabase.rpc('list_device_coordinators')
   ]));
   if (!Array.isArray(loadResults)) throw resultError(loadResults) || new Error('Unable to reload queue.');
-  const [fileResult, codeResult, requestResult, specialistResult, coordinatorResult] = loadResults;
+  const [fileResult, codeResult, requestResult, deviceRequestResult, specialistResult, coordinatorResult] = loadResults;
 
   if (fileResult.error) throw fileResult.error;
   if (codeResult.error) throw codeResult.error;
   if (requestResult.error) throw requestResult.error;
+  if (deviceRequestResult.error) throw deviceRequestResult.error;
   if (specialistResult.error) throw specialistResult.error;
   if (coordinatorResult.error) throw coordinatorResult.error;
 
   const nextFiles = fileResult.data.map(rowToFile);
   const nextGipodRequests = (requestResult.data || []).map(rowToGipodRequest);
+  const nextDeviceRequests = (deviceRequestResult.data || []).map(rowToDeviceRequest);
   files = nextFiles;
   gipodCodes = codeResult.data.map((row) => ({
     id: row.id,
@@ -854,6 +896,8 @@ async function loadData() {
   }));
   queueGipodRequestNotifications(nextGipodRequests);
   gipodRequests = nextGipodRequests;
+  queueDeviceRequestNotifications(nextDeviceRequests);
+  deviceRequests = nextDeviceRequests;
   specialists = specialistResult.data.map(rowToSpecialist);
   coordinators = coordinatorResult.data.map(rowToSpecialist);
   if (canManageUsers()) {
@@ -935,6 +979,29 @@ function rowToGipodRequest(row) {
   };
 }
 
+function rowToDeviceRequest(row) {
+  return {
+    id: row.id,
+    crmLink: row.crm_link || '',
+    deviceNumber: row.device_number || '',
+    internalSerial: row.internal_serial_number || '',
+    requestType: row.request_type || 'lock_down',
+    appsWanted: row.apps_wanted || '',
+    notes: row.notes || '',
+    requesterUserId: row.requester_user_id || '',
+    requesterName: row.requester_name || 'Unknown requester',
+    requesterRole: row.requester_role || '',
+    status: row.status || 'pending',
+    claimedByUserId: row.claimed_by_user_id || '',
+    claimedByName: row.claimed_by_name || '',
+    completedByUserId: row.completed_by_user_id || '',
+    completedByName: row.completed_by_name || '',
+    requestedAt: row.requested_at || '',
+    claimedAt: row.claimed_at || '',
+    completedAt: row.completed_at || ''
+  };
+}
+
 function isUserOnline(userId, fallback = false) {
   return presenceSynced ? onlineUserIds.has(userId) : Boolean(fallback);
 }
@@ -1010,6 +1077,21 @@ function unsubscribeRealtime() {
   if (!supabase || !realtimeChannel) return;
   supabase.removeChannel(realtimeChannel);
   realtimeChannel = null;
+}
+
+function startDeviceRequestPolling() {
+  stopDeviceRequestPolling();
+  deviceRequestPollTimer = window.setInterval(() => {
+    if (currentUser?.deviceRequestToken && ['Admin', 'Lead', 'Device Systems Specialist'].includes(effectiveRole())) {
+      loadData();
+    }
+  }, 15000);
+}
+
+function stopDeviceRequestPolling() {
+  if (!deviceRequestPollTimer) return;
+  window.clearInterval(deviceRequestPollTimer);
+  deviceRequestPollTimer = null;
 }
 
 function currentPresenceKey() {
@@ -1518,6 +1600,48 @@ function queueGipodRequestNotifications(nextRequests) {
     });
 }
 
+function queueDeviceRequestNotifications(nextRequests) {
+  if (!currentUser?.id) return;
+  if (suppressExistingDeviceRequestNotifications) {
+    nextRequests.forEach((request) => {
+      if (request.status === 'pending') seenDeviceRequestNotifications.add(request.id);
+      if (request.status === 'complete') seenDeviceCompletionNotifications.add(request.id);
+    });
+    suppressExistingDeviceRequestNotifications = false;
+    return;
+  }
+
+  if (effectiveRole() === 'Device Systems Specialist') {
+    nextRequests
+      .filter((request) => request.status === 'pending')
+      .filter((request) => !seenDeviceRequestNotifications.has(request.id))
+      .forEach((request) => {
+        seenDeviceRequestNotifications.add(request.id);
+        showAppNotification(
+          `device-request-${request.id}`,
+          'New device request',
+          `${request.requesterName} requested ${deviceRequestTypes[request.requestType] || 'device work'} for ${request.deviceNumber}.`,
+          `<button class="btn" data-action="view-device-requests" type="button">View</button>`
+        );
+      });
+  }
+
+  if (['Admin', 'Lead'].includes(effectiveRole())) {
+    nextRequests
+      .filter((request) => request.status === 'complete')
+      .filter((request) => !seenDeviceCompletionNotifications.has(request.id))
+      .forEach((request) => {
+        seenDeviceCompletionNotifications.add(request.id);
+        showAppNotification(
+          `device-complete-${request.id}`,
+          'Device request complete',
+          `${request.completedByName || 'Device Systems'} completed ${deviceRequestTypes[request.requestType] || 'the request'} for ${request.deviceNumber}.`,
+          `<button class="btn" data-action="view-device-requests" type="button">View</button>`
+        );
+      });
+  }
+}
+
 function queuePrepReadyNotifications() {
   const coordinator = currentCoordinatorProfile();
   if (!coordinator) return;
@@ -1895,6 +2019,7 @@ function renderPrePrep() {
     return `<tr class="${missingDuplicateNote ? 'duplicate-crm' : ''}"><td><b>${esc(item.code)}</b></td><td><span class="pill ${item.usedOn ? 'prep' : 'ready'}">${item.usedOn ? 'Used' : 'Available'}</span></td><td>${esc(item.usedOn || 'none')}${missingDuplicateNote ? '<span class="duplicate-warning">Duplicate CRM - add one note</span>' : ''}</td><td>${esc(formatDate(item.usedDate))}</td><td><textarea class="note-input" data-code-note="${item.id}" aria-label="GIPOD note for ${esc(item.code)}">${esc(item.note || '')}</textarea></td><td><div class="actions"><button class="btn small secondary" data-action="save-code-note" data-id="${item.id}" type="button">Save note</button><button class="btn small ${item.usedOn ? 'secondary' : ''}" data-action="use-code" data-id="${item.id}" type="button">${item.usedOn ? 'Edit usage' : 'Use code'}</button></div></td></tr>`;
   }).join('') || `<tr><td colspan="6"><div class="empty">No ${codeTab === 'used' ? 'used' : 'unused'} GIPOD codes.</div></td></tr>`;
   renderGipodRequests();
+  renderDeviceRequests();
 }
 
 function renderGipodRequests() {
@@ -1914,6 +2039,41 @@ function renderGipodRequests() {
     </tr>
   `);
   $('gipodRequestRows').innerHTML = tableRows(rows, 'No GIPOD code requests yet.', 8);
+}
+
+function renderDeviceRequests() {
+  const openRequests = deviceRequests.filter((request) => request.status !== 'complete');
+  if ($('deviceRequestTabCount')) $('deviceRequestTabCount').textContent = openRequests.length;
+  if (!$('deviceRequestRows')) return;
+  const rows = deviceRequests.map((request) => {
+    const isComplete = request.status === 'complete';
+    const isClaimed = Boolean(request.claimedByUserId);
+    const canClaim = effectiveRole() === 'Device Systems Specialist' && !isComplete && !isClaimed;
+    const canComplete = effectiveRole() === 'Device Systems Specialist' && !isComplete && (!request.claimedByUserId || request.claimedByUserId === currentUser.id);
+    const crmLabel = crmRecordNumber(request.crmLink) || 'Open CRM';
+    const statusLabel = isComplete ? 'Complete' : isClaimed ? 'Claimed' : 'Pending';
+    const statusClassName = isComplete ? 'ready' : isClaimed ? 'qa' : 'open';
+    const actions = [
+      canClaim ? `<button class="btn small secondary" data-action="claim-device-request" data-id="${request.id}" type="button">Claim</button>` : '',
+      canComplete ? `<button class="btn small" data-action="complete-device-request" data-id="${request.id}" type="button">Complete</button>` : ''
+    ].filter(Boolean).join('');
+    return `
+      <tr class="${isComplete ? 'device-request-complete' : isClaimed ? 'device-request-claimed' : ''}">
+        <td>${request.crmLink ? `<a href="${esc(request.crmLink)}" target="_blank" rel="noopener">${esc(crmLabel)}</a>` : '<span class="muted">none</span>'}</td>
+        <td><b>${esc(request.deviceNumber || 'none')}</b></td>
+        <td>${esc(request.internalSerial || 'none')}</td>
+        <td>${esc(deviceRequestTypes[request.requestType] || request.requestType)}</td>
+        <td class="note-preview">${esc(request.appsWanted || 'none')}</td>
+        <td class="note-preview">${esc(request.notes || 'none')}</td>
+        <td>${esc(request.requesterName)}<div class="muted">${esc(request.requesterRole || '')}</div></td>
+        <td>${esc(formatDateTime(request.requestedAt))}</td>
+        <td>${request.claimedByName ? `<span class="pill prep">${esc(request.claimedByName)}</span>` : '<span class="muted">Unclaimed</span>'}</td>
+        <td><span class="pill ${statusClassName}">${esc(statusLabel)}</span></td>
+        <td><div class="actions">${actions || '<span class="muted">No action</span>'}</div></td>
+      </tr>
+    `;
+  });
+  $('deviceRequestRows').innerHTML = tableRows(rows, 'No device requests yet.', 11);
 }
 
 function renderCurrentView() {
@@ -1944,12 +2104,14 @@ function render() {
     if (viewElement) viewElement.classList.toggle('hide', view !== name);
     if (navElement) navElement.classList.toggle('active', view === name);
   });
-  if (prepTab === 'gipod-requests' && effectiveRole() !== 'Device Systems Specialist') prepTab = 'files';
-  ['files', 'codes', 'gipod-requests'].forEach((tab) => $(`tab-${tab}`)?.classList.toggle('active', prepTab === tab));
+  if (['gipod-requests', 'device-requests'].includes(prepTab) && effectiveRole() !== 'Device Systems Specialist') prepTab = 'files';
+  ['files', 'codes', 'gipod-requests', 'device-requests'].forEach((tab) => $(`tab-${tab}`)?.classList.toggle('active', prepTab === tab));
   $('tab-gipod-requests')?.classList.toggle('hide', effectiveRole() !== 'Device Systems Specialist');
+  $('tab-device-requests')?.classList.toggle('hide', effectiveRole() !== 'Device Systems Specialist');
   $('prepFilesPanel').classList.toggle('hide', prepTab !== 'files');
   $('prepCodesPanel').classList.toggle('hide', prepTab !== 'codes');
   $('gipodRequestsPanel').classList.toggle('hide', prepTab !== 'gipod-requests');
+  $('deviceRequestsPanel').classList.toggle('hide', prepTab !== 'device-requests');
   $('bulkFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkDeleteFilesButton').classList.toggle('hide', prepTab !== 'files');
   $('bulkCodesButton').classList.toggle('hide', prepTab !== 'codes');
@@ -1977,7 +2139,7 @@ async function openProfile(userId) {
 }
 
 function setPrepTab(tab) {
-  prepTab = tab === 'gipod-requests' ? 'gipod-requests' : tab === 'codes' ? 'codes' : 'files';
+  prepTab = tab === 'device-requests' ? 'device-requests' : tab === 'gipod-requests' ? 'gipod-requests' : tab === 'codes' ? 'codes' : 'files';
   render();
 }
 
@@ -2324,6 +2486,83 @@ async function approveGipodRequest(requestId) {
   }));
   if (error) return showError(error);
   alert(`GIPOD code ${data} assigned.`);
+  await loadData();
+}
+
+function showDeviceRequestModal() {
+  if (!canCreateDeviceRequest()) return;
+  $('deviceRequestForm').reset();
+  $('deviceRequestMessage').className = 'muted full';
+  $('deviceRequestMessage').textContent = 'Send this request to Device Systems.';
+  syncDeviceRequestType();
+  $('deviceRequestModal').showModal();
+  $('deviceRequestCrm').focus();
+}
+
+function syncDeviceRequestType() {
+  const isAppRequest = $('deviceRequestType')?.value === 'app_request';
+  $('deviceRequestAppsField')?.classList.toggle('hide', !isAppRequest);
+  if ($('deviceRequestApps')) $('deviceRequestApps').required = Boolean(isAppRequest);
+}
+
+async function submitDeviceRequest(event) {
+  event.preventDefault();
+  if (!canCreateDeviceRequest()) return;
+  const requestType = $('deviceRequestType').value;
+  const appsWanted = $('deviceRequestApps').value.trim();
+  $('deviceRequestMessage').className = 'muted full';
+  if (requestType === 'app_request' && !appsWanted) {
+    $('deviceRequestMessage').className = 'error full';
+    $('deviceRequestMessage').textContent = 'List the apps wanted before sending an app request.';
+    return;
+  }
+  const { error } = await withSupabaseRetry(() => supabase.rpc('create_device_request', {
+    p_session_token: currentUser.deviceRequestToken || '',
+    p_crm_link: $('deviceRequestCrm').value.trim(),
+    p_device_number: $('deviceRequestDeviceNumber').value.trim(),
+    p_internal_serial_number: $('deviceRequestSerial').value.trim(),
+    p_request_type: requestType,
+    p_apps_wanted: requestType === 'app_request' ? appsWanted : '',
+    p_notes: $('deviceRequestNotes').value.trim(),
+    p_requested_at: localTimestampIsoWithOffset()
+  }));
+  if (error) return showError(error);
+  $('deviceRequestModal').close();
+  view = canView('preprep') ? 'preprep' : view;
+  if (view === 'preprep' && effectiveRole() === 'Device Systems Specialist') prepTab = 'device-requests';
+  await loadData();
+}
+
+async function claimDeviceRequest(requestId) {
+  if (effectiveRole() !== 'Device Systems Specialist') return;
+  const request = deviceRequests.find((item) => item.id === requestId);
+  if (!request || request.status === 'complete' || request.claimedByUserId) return;
+  const { data, error } = await withSupabaseRetry(() => supabase.rpc('claim_device_request', {
+    p_session_token: currentUser.deviceRequestToken || '',
+    p_request_id: requestId,
+    p_claimed_at: localTimestampIsoWithOffset()
+  }));
+  if (error) return showError(error);
+  if (!data) alert('This request was already claimed.');
+  await loadData();
+}
+
+async function completeDeviceRequest(requestId) {
+  if (effectiveRole() !== 'Device Systems Specialist') return;
+  const request = deviceRequests.find((item) => item.id === requestId);
+  if (!request || request.status === 'complete') return;
+  if (request.claimedByUserId && request.claimedByUserId !== currentUser.id) {
+    alert(`This request is claimed by ${request.claimedByName}.`);
+    return;
+  }
+  const completedAt = localTimestampIsoWithOffset();
+  const { data, error } = await withSupabaseRetry(() => supabase.rpc('complete_device_request', {
+    p_session_token: currentUser.deviceRequestToken || '',
+    p_request_id: requestId,
+    p_completed_at: completedAt
+  }));
+  if (error) return showError(error);
+  if (!data) alert('This request was already completed.');
   await loadData();
 }
 
@@ -2930,7 +3169,7 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'open-crm', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'view-gipod-requests', 'request-gipod-code', 'approve-gipod-request', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
+  if (['open-file', 'open-crm', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'view-gipod-requests', 'view-device-requests', 'request-gipod-code', 'approve-gipod-request', 'claim-device-request', 'complete-device-request', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
@@ -2942,12 +3181,18 @@ document.addEventListener('click', async (event) => {
     view = 'preprep';
     setPrepTab('gipod-requests');
   }
+  if (action === 'view-device-requests') {
+    view = 'preprep';
+    setPrepTab('device-requests');
+  }
   if (action === 'prepper-filter') setPrepperFilter(target.dataset.name);
   if (action === 'code-filter') setCodeTab(target.dataset.name);
   if (action === 'use-code') showManualGipodModal(id);
   if (action === 'claim-gipod') await claimNextGipodCode(id);
   if (action === 'request-gipod-code') showGipodRequestModal(id);
   if (action === 'approve-gipod-request') await approveGipodRequest(id);
+  if (action === 'claim-device-request') await claimDeviceRequest(id);
+  if (action === 'complete-device-request') await completeDeviceRequest(id);
   if (action === 'claim-file') await claimFile(id);
   if (action === 'claim-prep') await claimPrep(id);
   if (action === 'claim-qa') await claimQa(id);
@@ -3025,6 +3270,7 @@ async function startApp() {
     await loadData();
     subscribeRealtime();
     subscribePresence();
+    startDeviceRequestPolling();
     startLoginStatusRefresh();
     startHeartbeat();
   } catch (error) {

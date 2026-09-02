@@ -407,6 +407,18 @@ input:focus, select:focus, textarea:focus {
 .duplicate-crm:hover { background: #ffdddd; }
 :root[data-theme="dark"] .duplicate-crm { background: #4a1f2d; }
 :root[data-theme="dark"] .duplicate-crm:hover { background: #5a2434; }
+.device-request-claimed {
+  background: #fff1dc;
+}
+.device-request-complete {
+  background: #e6f7ed;
+}
+:root[data-theme="dark"] .device-request-claimed {
+  background: #3a2815;
+}
+:root[data-theme="dark"] .device-request-complete {
+  background: #173525;
+}
 .duplicate-warning {
   display: block;
   margin-top: 3px;
