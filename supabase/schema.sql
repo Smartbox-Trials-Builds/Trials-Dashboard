@@ -265,8 +265,8 @@ begin
     raise exception 'File not found.';
   end if;
 
-  if coalesce(target_file.gipod_code, '') <> '' or coalesce(target_file.new_gipod_code, '') <> '' then
-    raise exception 'This file already has a GIPOD code.';
+  if coalesce(target_file.new_gipod_code, '') <> '' then
+    raise exception 'This file already has a new GIPOD code.';
   end if;
 
   crm_number := substring(target_file.crm_link from '([0-9]{5})[^0-9]*$');
@@ -347,9 +347,9 @@ begin
     select 1
     from public.trial_files
     where id = request_row.file_id
-      and (coalesce(gipod_code, '') <> '' or coalesce(new_gipod_code, '') <> '')
+      and coalesce(new_gipod_code, '') <> ''
   ) then
-    raise exception 'This file already has a GIPOD code.';
+    raise exception 'This file already has a new GIPOD code.';
   end if;
 
   note_text := 'Requested by ' || request_row.requester_name || ': ' || request_row.reason;
@@ -375,7 +375,6 @@ begin
   update public.trial_files
   set new_gipod_code = claimed_code
   where id = request_row.file_id
-    and coalesce(gipod_code, '') = ''
     and coalesce(new_gipod_code, '') = '';
 
   if not found then
@@ -384,7 +383,7 @@ begin
         used_date = null,
         note = ''
     where code = claimed_code;
-    raise exception 'This file already has a GIPOD code.';
+    raise exception 'This file already has a new GIPOD code.';
   end if;
 
   update public.gipod_code_requests

@@ -65,19 +65,23 @@ header {
   flex: 0 0 auto;
   width: auto;
   padding: 6px 8px;
-  color: #d8e4ff;
-  border-color: transparent;
+  color: #fff;
+  background: #25344f;
+  border-color: rgba(255, 255, 255, .32);
   white-space: nowrap;
   font-size: 12px;
   border-radius: 6px;
+  font-weight: 800;
 }
 .header-nav button:hover {
-  background: rgba(255, 255, 255, .1);
+  background: #31517f;
+  border-color: rgba(255, 255, 255, .5);
+  color: #fff;
 }
 .header-nav button.active {
-  background: #e8efff;
-  border-color: #b9cdfc;
-  color: #153b9f;
+  background: #fff;
+  border-color: #fff;
+  color: #10264c;
 }
 .header-actions {
   display: flex;

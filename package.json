@@ -1,6 +1,6 @@
 {
   "name": "trials-operations-dashboard",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "description": "Windows desktop trials operations dashboard backed by Supabase Realtime.",
   "type": "module",
   "main": "electron/main.js",

@@ -1231,7 +1231,7 @@ function actionButtons(file) {
 }
 
 function canRequestGipodCode(file) {
-  return effectiveRole() === 'Device Coordinator' && file && !file.gipod && !file.newGipod;
+  return effectiveRole() === 'Device Coordinator' && file && !file.newGipod;
 }
 
 function pendingGipodRequestForFile(fileId) {
