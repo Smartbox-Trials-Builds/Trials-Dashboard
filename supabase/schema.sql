@@ -231,7 +231,7 @@ begin
 end;
 $$;
 
-create or replace function public.request_gipod_code(p_actor_id uuid, p_file_id uuid, p_reason text)
+create or replace function public.request_gipod_code(p_actor_id uuid, p_file_id uuid, p_reason text, p_requested_at timestamptz default now())
 returns uuid
 language plpgsql
 security definer
@@ -282,7 +282,9 @@ begin
     last_name,
     device,
     crm_number,
-    reason
+    reason,
+    requested_at,
+    updated_at
   )
   values (
     p_file_id,
@@ -292,22 +294,24 @@ begin
     target_file.last_name,
     target_file.device,
     crm_number,
-    trim(p_reason)
+    trim(p_reason),
+    p_requested_at,
+    p_requested_at
   )
   on conflict (file_id, status)
   do update set
     reason = excluded.reason,
     requester_user_id = excluded.requester_user_id,
     requester_name = excluded.requester_name,
-    requested_at = now(),
-    updated_at = now()
+    requested_at = p_requested_at,
+    updated_at = p_requested_at
   returning id into request_id;
 
   return request_id;
 end;
 $$;
 
-create or replace function public.approve_gipod_code_request(p_actor_id uuid, p_request_id uuid)
+create or replace function public.approve_gipod_code_request(p_actor_id uuid, p_request_id uuid, p_resolved_at timestamptz default now(), p_used_date date default current_date)
 returns text
 language plpgsql
 security definer
@@ -352,7 +356,7 @@ begin
 
   update public.gipod_codes
   set used_on = request_row.crm_number,
-      used_date = current_date,
+      used_date = p_used_date,
       note = note_text
   where id = (
     select id
@@ -387,8 +391,8 @@ begin
   set status = 'approved',
       gipod_code = claimed_code,
       resolved_by_user_id = actor_user.id,
-      resolved_at = now(),
-      updated_at = now()
+      resolved_at = p_resolved_at,
+      updated_at = p_resolved_at
   where id = request_row.id;
 
   insert into public.app_file_logs (
@@ -398,7 +402,8 @@ begin
     action,
     field_name,
     old_value,
-    new_value
+    new_value,
+    created_at
   )
   values (
     request_row.file_id,
@@ -407,7 +412,8 @@ begin
     'GIPOD request approved',
     'New GIPOD code',
     'none',
-    claimed_code
+    claimed_code,
+    p_resolved_at
   );
 
   return claimed_code;
@@ -422,11 +428,6 @@ for each row execute function public.set_updated_at();
 drop trigger if exists set_gipod_codes_updated_at on public.gipod_codes;
 create trigger set_gipod_codes_updated_at
 before update on public.gipod_codes
-for each row execute function public.set_updated_at();
-
-drop trigger if exists set_gipod_code_requests_updated_at on public.gipod_code_requests;
-create trigger set_gipod_code_requests_updated_at
-before update on public.gipod_code_requests
 for each row execute function public.set_updated_at();
 
 drop trigger if exists set_app_users_updated_at on public.app_users;
@@ -1281,8 +1282,8 @@ grant select, insert, delete on public.app_shipment_activity to anon, authentica
 grant select, insert, delete on public.app_eod_cleanups to anon, authenticated;
 grant select, insert, delete on public.coordinator_auto_queue to anon, authenticated;
 grant execute on function public.claim_next_gipod_code(uuid, text, date) to anon, authenticated;
-grant execute on function public.request_gipod_code(uuid, uuid, text) to anon, authenticated;
-grant execute on function public.approve_gipod_code_request(uuid, uuid) to anon, authenticated;
+grant execute on function public.request_gipod_code(uuid, uuid, text, timestamptz) to anon, authenticated;
+grant execute on function public.approve_gipod_code_request(uuid, uuid, timestamptz, date) to anon, authenticated;
 grant execute on function public.register_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.login_app_user(text, text, text) to anon, authenticated;
 grant execute on function public.set_app_user_login_status(uuid, boolean) to anon, authenticated;

@@ -49,7 +49,11 @@ let prepperFilter = 'All';
 let selectedFileIds = new Set();
 let activePrepNotifications = new Map();
 let seenPrepNotifications = new Set();
+let activeAppNotifications = new Map();
+let seenGipodRequestNotifications = new Set();
+let seenGipodApprovalNotifications = new Set();
 let suppressExistingPrepNotifications = false;
+let suppressExistingGipodNotifications = true;
 let bulkLinks = [];
 let connectionState = 'Connecting';
 let theme = localStorage.getItem('theme') || 'light';
@@ -97,6 +101,14 @@ function formatDateTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return String(value);
   return `${date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+function localTimestampIsoWithOffset(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const absoluteOffset = Math.abs(offsetMinutes);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${pad(Math.floor(absoluteOffset / 60))}:${pad(absoluteOffset % 60)}`;
 }
 
 function displayValue(value) {
@@ -361,7 +373,7 @@ function renderShell() {
           <div id="prepFilesPanel">
             <div class="tabs assignment-tabs" id="prepperTabs" aria-label="Filter files by specialist"></div>
             <div class="table-wrap">
-              <table class="table device-systems-table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Device #</th><th>Vocabulary requested</th><th>GIPOD</th><th>New GIPOD code</th><th>Loan</th><th>Lane</th><th>Accessories</th><th>Notes</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
+              <table class="table device-systems-table"><thead><tr><th class="select-cell"><input id="selectAllFiles" type="checkbox" aria-label="Select all visible files"></th><th>Client</th><th>CRM #</th><th>Device</th><th>Device #</th><th>Vocabulary requested</th><th>GIPOD</th><th>Loan</th><th>Lane</th><th>Accessories</th><th>Notes</th><th>Specialist</th><th>Status</th><th>Queue date</th><th></th></tr></thead><tbody id="preprepRows"></tbody></table>
             </div>
           </div>
           <div id="prepCodesPanel" class="table-wrap hide">
@@ -466,6 +478,7 @@ function dialogs() {
       <div class="field"><label for="editDate">Queue date</label><input id="editDate" type="date"></div><div class="field"><label for="editExpires">Ship by date</label><input id="editExpires" type="date"></div>
       <div class="field"><label for="editStatus">Status</label><select id="editStatus"><option>Ready for Pre-Prep</option><option>Ready for Prep</option><option>Ready for QA</option><option>Complete</option><option>Shipped</option></select></div><div class="field full"><label for="editLane">Dashboard lane</label><select id="editLane"><option>Expedites</option><option>Funded Rentals</option><option>Ship Requested</option><option>Accessories</option><option>Daily Queue</option></select></div>
       <div class="field full"><label for="editCrm">CRM link</label><input id="editCrm" type="url" placeholder="https://crm.example.com/record/..."></div><div class="field full"><label for="editNotes">Notes</label><textarea id="editNotes"></textarea></div>
+      <div id="fileGipodRequestArea" class="file-request-area full"></div>
     </div><div id="fileLogPanel" class="hide"></div><div class="footer"><a id="editCrmButton" class="btn ghost" href="#" target="_blank" rel="noopener">Open CRM</a><button id="unassignFileButton" class="btn secondary" type="button" data-action="unassign-file">Unassign file</button><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button class="btn" type="submit">Save changes</button></div></form></dialog>
 
     <dialog id="bulkModal" class="wide-dialog"><form method="dialog" id="bulkForm" class="section bulk"><div class="dialog-head"><div><div class="eyebrow">Device Systems intake</div><h3>Bulk add files</h3></div><button class="icon-btn" type="button" data-action="close-dialog" aria-label="Close">x</button></div><p class="help">Copy rows in Excel and paste them here in this exact order: <b>Last Name | First Name | Device | Loan Type | Queue Date | Vocabulary | Accessories/Keyguard/Notes</b>. Review and edit every line below before importing.</p><div class="field"><label for="bulkRows">Excel rows</label><textarea id="bulkRows" placeholder="Paste tab-separated rows here..."></textarea></div><div id="bulkMessage" class="muted"></div><div id="bulkPreview" class="preview bulk-preview hide"></div><div class="footer"><button class="btn secondary" type="button" data-action="close-dialog">Cancel</button><button id="bulkSubmit" class="btn" type="submit">Add files to Device Systems</button></div></form></dialog>
@@ -622,7 +635,15 @@ async function logout() {
     entry.element?.remove();
   });
   activePrepNotifications.clear();
+  activeAppNotifications.forEach((entry) => {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.element?.remove();
+  });
+  activeAppNotifications.clear();
   seenPrepNotifications.clear();
+  seenGipodRequestNotifications.clear();
+  seenGipodApprovalNotifications.clear();
+  suppressExistingGipodNotifications = true;
   claimWindowTimers.forEach((timer) => clearTimeout(timer));
   claimWindowTimers.clear();
   persistCurrentUser(null);
@@ -821,7 +842,9 @@ async function loadData() {
   if (specialistResult.error) throw specialistResult.error;
   if (coordinatorResult.error) throw coordinatorResult.error;
 
-  files = fileResult.data.map(rowToFile);
+  const nextFiles = fileResult.data.map(rowToFile);
+  const nextGipodRequests = (requestResult.data || []).map(rowToGipodRequest);
+  files = nextFiles;
   gipodCodes = codeResult.data.map((row) => ({
     id: row.id,
     code: row.code,
@@ -829,7 +852,8 @@ async function loadData() {
     usedDate: row.used_date || '',
     note: row.note || ''
   }));
-  gipodRequests = (requestResult.data || []).map(rowToGipodRequest);
+  queueGipodRequestNotifications(nextGipodRequests);
+  gipodRequests = nextGipodRequests;
   specialists = specialistResult.data.map(rowToSpecialist);
   coordinators = coordinatorResult.data.map(rowToSpecialist);
   if (canManageUsers()) {
@@ -1217,7 +1241,7 @@ function pendingGipodRequestForFile(fileId) {
 function gipodRequestButton(file) {
   if (!canRequestGipodCode(file)) return '';
   const pending = pendingGipodRequestForFile(file.id);
-  return `<button class="btn small secondary card-step" data-action="request-gipod-code" data-id="${file.id}" type="button" ${pending ? 'disabled' : ''}>${pending ? 'GIPOD requested' : 'Request GIPOD code'}</button>`;
+  return `<button class="btn small secondary" data-action="request-gipod-code" data-id="${file.id}" type="button" ${pending ? 'disabled' : ''}>${pending ? 'GIPOD requested' : 'Request GIPOD code'}</button>`;
 }
 
 function statusStepFor(file) {
@@ -1255,12 +1279,10 @@ function fileCard(file, name) {
     <div>${esc(file.device)}</div>
     <div class="file-meta">${esc(file.loan || 'No loan type')} - Ship by ${esc(formatDate(file.expires))}</div>
     <div class="file-card-details">
-      <div><span>GIPOD</span><b>${esc(file.gipod || 'none')}</b></div>
-      <div><span>New GIPOD code</span><b>${esc(file.newGipod || 'none')}</b></div>
       <div><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
       <div><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
     </div>
-    ${prepQaLog(file)}${gipodRequestButton(file)}${workflowButtons(file)}${actionButtons(file)}
+    ${prepQaLog(file)}${workflowButtons(file)}${actionButtons(file)}
   </article>`;
 }
 
@@ -1272,14 +1294,13 @@ function fileClaimClass(file) {
 
 function fileLine(file, name) {
   const accessories = fileAccessories(file);
-  const workflow = `${gipodRequestButton(file)}${workflowButtons(file)}`;
+  const workflow = workflowButtons(file);
   return `<article class="file-line ${name === 'Expedites' ? 'ex' : ''} ${fileClaimClass(file)}" data-action="open-file" data-id="${file.id}">
     <div class="file-line-main">
       <b>${esc(file.last)}, ${esc(file.first)}</b>
       <span>${esc(file.device || 'Device not listed')}</span>
     </div>
     <div class="file-line-cell"><span>Loan</span><b>${esc(file.loan || 'none')}</b></div>
-    <div class="file-line-cell"><span>New GIPOD</span><b>${esc(file.newGipod || 'none')}</b></div>
     <div class="file-line-cell"><span>Ship by</span><b>${esc(formatDate(file.expires))}</b></div>
     <div class="file-line-cell"><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
     <div class="file-line-cell wide"><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
@@ -1432,6 +1453,69 @@ function showPrepNotification(file) {
   notificationHost().appendChild(toast);
   const timer = setTimeout(() => dismissPrepNotification(file.id), 10000);
   activePrepNotifications.set(file.id, { element: toast, timer });
+}
+
+function dismissAppNotification(notificationId) {
+  const entry = activeAppNotifications.get(notificationId);
+  if (entry?.timer) clearTimeout(entry.timer);
+  entry?.element?.remove();
+  activeAppNotifications.delete(notificationId);
+}
+
+function showAppNotification(notificationId, title, message, actionHtml = '') {
+  if (activeAppNotifications.has(notificationId)) return;
+  const toast = document.createElement('div');
+  toast.className = 'prep-notification';
+  toast.innerHTML = `
+    <div class="prep-notification-body">
+      <strong>${esc(title)}</strong>
+      <span>${esc(message)}</span>
+    </div>
+    ${actionHtml}
+  `;
+  notificationHost().appendChild(toast);
+  const timer = setTimeout(() => dismissAppNotification(notificationId), 12000);
+  activeAppNotifications.set(notificationId, { element: toast, timer });
+}
+
+function queueGipodRequestNotifications(nextRequests) {
+  if (!currentUser?.id) return;
+  if (suppressExistingGipodNotifications) {
+    nextRequests.forEach((request) => {
+      if (request.status === 'pending') seenGipodRequestNotifications.add(request.id);
+      if (request.status === 'approved' && request.requesterUserId === currentUser.id) seenGipodApprovalNotifications.add(request.id);
+    });
+    suppressExistingGipodNotifications = false;
+    return;
+  }
+
+  if (effectiveRole() === 'Device Systems Specialist') {
+    nextRequests
+      .filter((request) => request.status === 'pending')
+      .filter((request) => !seenGipodRequestNotifications.has(request.id))
+      .forEach((request) => {
+        seenGipodRequestNotifications.add(request.id);
+        showAppNotification(
+          `gipod-request-${request.id}`,
+          'New GIPOD request',
+          `${request.requesterName} requested a code for ${request.lastName}, ${request.firstName}.`,
+          `<button class="btn" data-action="view-gipod-requests" type="button">View</button>`
+        );
+      });
+  }
+
+  nextRequests
+    .filter((request) => request.status === 'approved' && request.requesterUserId === currentUser.id)
+    .filter((request) => !seenGipodApprovalNotifications.has(request.id))
+    .forEach((request) => {
+      seenGipodApprovalNotifications.add(request.id);
+      showAppNotification(
+        `gipod-approved-${request.id}`,
+        'GIPOD request approved',
+        `${request.gipodCode || 'A new code'} was added to ${request.lastName}, ${request.firstName}.`,
+        `<button class="btn" data-action="open-file" data-id="${request.fileId}" type="button">Open file</button>`
+      );
+    });
 }
 
 function queuePrepReadyNotifications() {
@@ -1792,8 +1876,8 @@ function renderPrePrep() {
     const deviceNumberInput = canEditFiles()
       ? `<input class="inline-text-input" data-action="update-device-number" data-id="${file.id}" value="${esc(file.deviceNumber || '')}" placeholder="Device #">`
       : esc(file.deviceNumber || 'none');
-    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${deviceNumberInput}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.newGipod || 'none')}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(formatDate(file.date))}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
-  }).join('') || '<tr><td colspan="16"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
+    return `<tr class="clickable" data-action="open-file" data-id="${file.id}"><td class="select-cell"><input type="checkbox" data-action="select-file" data-id="${file.id}" aria-label="Select ${esc(file.last)}, ${esc(file.first)}" ${selectedFileIds.has(file.id) ? 'checked' : ''}></td><td class="client-name">${esc(file.last)}, ${esc(file.first)}</td><td><span class="crm-number">${esc(crmNumber || 'none')}</span></td><td>${esc(file.device)}</td><td>${deviceNumberInput}</td><td>${esc(file.vocab || 'none')}</td><td>${gipodCell}</td><td>${esc(file.loan || 'none')}</td><td>${laneSelect}</td><td class="compact-text">${accessories.length ? accessories.map(esc).join(', ') : 'none'}</td><td class="note-preview">${esc(file.notes || 'none')}</td><td>${specialistCell}</td><td><span class="pill ${statusClass(file)}">${esc(file.status)}</span></td><td>${esc(formatDate(file.date))}</td><td><div class="actions"><button class="btn small secondary" data-action="ready-for-prep" data-id="${file.id}">Mark Ready for Prep</button><button class="btn small danger" data-action="delete-file" data-id="${file.id}">Delete</button>${actionButtons(file)}</div></td></tr>`;
+  }).join('') || '<tr><td colspan="15"><div class="empty">No devices are ready for pre-prep in this tab.</div></td></tr>';
   const visibleIds = rows.map((file) => file.id);
   const selectAll = $('selectAllFiles');
   selectAll.checked = visibleIds.length > 0 && visibleIds.every((id) => selectedFileIds.has(id));
@@ -1814,9 +1898,10 @@ function renderPrePrep() {
 }
 
 function renderGipodRequests() {
-  if ($('gipodRequestTabCount')) $('gipodRequestTabCount').textContent = gipodRequests.filter((request) => request.status === 'pending').length;
+  const pendingRequests = gipodRequests.filter((request) => request.status === 'pending');
+  if ($('gipodRequestTabCount')) $('gipodRequestTabCount').textContent = pendingRequests.length;
   if (!$('gipodRequestRows')) return;
-  const rows = gipodRequests.map((request) => `
+  const rows = pendingRequests.map((request) => `
     <tr>
       <td><b>${esc(request.lastName)}, ${esc(request.firstName)}</b></td>
       <td>${esc(request.device || 'Not listed')}</td>
@@ -1824,8 +1909,8 @@ function renderGipodRequests() {
       <td>${esc(request.requesterName)}</td>
       <td class="note-preview">${esc(request.reason || 'No reason listed')}</td>
       <td>${esc(formatDateTime(request.requestedAt))}</td>
-      <td><span class="pill ${request.status === 'approved' ? 'ready' : 'prep'}">${esc(request.status === 'approved' ? `Approved ${request.gipodCode || ''}`.trim() : 'Pending')}</span></td>
-      <td><div class="actions">${request.status === 'pending' ? `<button class="btn small" data-action="approve-gipod-request" data-id="${request.id}" type="button">Approve</button>` : ''}</div></td>
+      <td><span class="pill prep">Pending</span></td>
+      <td><div class="actions"><button class="btn small" data-action="approve-gipod-request" data-id="${request.id}" type="button">Approve</button></div></td>
     </tr>
   `);
   $('gipodRequestRows').innerHTML = tableRows(rows, 'No GIPOD code requests yet.', 8);
@@ -2101,7 +2186,8 @@ async function addFileLog(fileId, action, fieldName = '', oldValue = '', newValu
     action,
     field_name: fieldName,
     old_value: displayValue(oldValue),
-    new_value: displayValue(newValue)
+    new_value: displayValue(newValue),
+    created_at: localTimestampIsoWithOffset()
   });
   if (error) console.error('File log insert failed:', error);
 }
@@ -2141,7 +2227,8 @@ async function logFileChanges(fileId, current, patch) {
       action: `${labels[key]} changed`,
       field_name: labels[key],
       old_value: displayValue(current[key]),
-      new_value: displayValue(value)
+      new_value: displayValue(value),
+      created_at: localTimestampIsoWithOffset()
     }));
   if (!rows.length) return;
   const { error } = await supabase.from('app_file_logs').insert(rows);
@@ -2202,6 +2289,7 @@ async function submitGipodRequest(event) {
   event.preventDefault();
   const fileId = $('gipodRequestFileId').value;
   const reason = $('gipodRequestReason').value.trim();
+  $('gipodRequestMessage').className = 'muted full';
   if (!reason) {
     $('gipodRequestMessage').className = 'error full';
     $('gipodRequestMessage').textContent = 'Enter a reason before sending the request.';
@@ -2210,11 +2298,17 @@ async function submitGipodRequest(event) {
   const { error } = await withSupabaseRetry(() => supabase.rpc('request_gipod_code', {
     p_actor_id: currentUser.id,
     p_file_id: fileId,
-    p_reason: reason
+    p_reason: reason,
+    p_requested_at: localTimestampIsoWithOffset()
   }));
   if (error) return showError(error);
   $('gipodRequestModal').close();
   await loadData();
+  const openFileId = $('editId')?.value;
+  if (openFileId === fileId) {
+    const file = files.find((item) => item.id === fileId);
+    if (file) renderFileGipodRequestArea(file);
+  }
 }
 
 async function approveGipodRequest(requestId) {
@@ -2224,7 +2318,9 @@ async function approveGipodRequest(requestId) {
   if (!confirm(`Approve GIPOD code request for ${request.lastName}, ${request.firstName}?`)) return;
   const { data, error } = await withSupabaseRetry(() => supabase.rpc('approve_gipod_code_request', {
     p_actor_id: currentUser.id,
-    p_request_id: requestId
+    p_request_id: requestId,
+    p_resolved_at: localTimestampIsoWithOffset(),
+    p_used_date: todayLocalDate()
   }));
   if (error) return showError(error);
   alert(`GIPOD code ${data} assigned.`);
@@ -2259,6 +2355,26 @@ function renderFileLogPanel() {
       </table>
     </div>
   `;
+}
+
+function renderFileGipodRequestArea(file) {
+  const area = $('fileGipodRequestArea');
+  if (!area) return;
+  const pending = pendingGipodRequestForFile(file.id);
+  const approved = gipodRequests.find((request) => request.fileId === file.id && request.status === 'approved');
+  if (file.newGipod) {
+    area.innerHTML = `<div class="notice">New GIPOD code approved: <b>${esc(file.newGipod)}</b></div>`;
+    return;
+  }
+  if (approved?.gipodCode) {
+    area.innerHTML = `<div class="notice">New GIPOD code approved: <b>${esc(approved.gipodCode)}</b></div>`;
+    return;
+  }
+  if (canRequestGipodCode(file)) {
+    area.innerHTML = `<div class="request-inline"><span>${pending ? 'A GIPOD code request is pending for this file.' : 'Request a new GIPOD code from Device Systems.'}</span>${gipodRequestButton(file)}</div>`;
+    return;
+  }
+  area.innerHTML = '';
 }
 
 function renderCameraFields(file = {}) {
@@ -2321,6 +2437,7 @@ function openFile(id) {
   $('addCameraButton').disabled = !editable || document.querySelectorAll('.camera-extra.hide').length === 0;
   $('unassignFileButton').disabled = !editable;
   $('fileModal').querySelector('[data-action="close-dialog"]').disabled = false;
+  renderFileGipodRequestArea(file);
   setFileTab('details');
   renderFileLogPanel();
   $('fileModal').showModal();
@@ -2813,7 +2930,7 @@ document.addEventListener('click', async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-  if (['open-file', 'open-crm', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'request-gipod-code', 'approve-gipod-request', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
+  if (['open-file', 'open-crm', 'next-step', 'ready-for-prep', 'delete-file', 'delete-cleanup', 'delete-lead-reports', 'export-daily-reports', 'select-file', 'assign-lane', 'update-device-number', 'code-filter', 'claim-prep-notification', 'view-gipod-requests', 'request-gipod-code', 'approve-gipod-request', 'delete-user', 'claim-gipod', 'claim-file', 'claim-prep', 'claim-qa', 'use-code', 'save-code-note', 'file-tab', 'unassign-file', 'save-dashboard-layout'].includes(action)) event.stopPropagation();
   if (action === 'open-file') openFile(id);
   if (action === 'next-step' || action === 'ready-for-prep') await moveToNextStep(id);
   if (action === 'delete-file') await deleteFile(id);
@@ -2821,6 +2938,10 @@ document.addEventListener('click', async (event) => {
   if (action === 'delete-lead-reports') await deleteLeadReports();
   if (action === 'export-daily-reports') exportDailyReports();
   if (action === 'claim-prep-notification') await claimPrepFromNotification(id);
+  if (action === 'view-gipod-requests') {
+    view = 'preprep';
+    setPrepTab('gipod-requests');
+  }
   if (action === 'prepper-filter') setPrepperFilter(target.dataset.name);
   if (action === 'code-filter') setCodeTab(target.dataset.name);
   if (action === 'use-code') showManualGipodModal(id);
