@@ -40,6 +40,9 @@ let deviceRequests = [];
 let users = [];
 let specialists = [];
 let coordinators = [];
+let deviceQueue = [];
+let assignmentNotices = [];
+let queueBusy = false;
 let shipmentHistory = [];
 let eodCleanups = [];
 let teamActivity = [];
@@ -370,6 +373,7 @@ function renderShell() {
           <div class="preprep-head">
             <div><h3>Active device queue</h3><div class="muted">Files are organized into lanes in the order the team should work them.</div></div>
           </div>
+          <div id="deviceQueuePanel" aria-live="polite"></div>
           <div class="kanban" id="dashboardLanes"></div>
         </section>
         <section class="card section hide" id="preprepView">
@@ -656,6 +660,9 @@ async function markCurrentUserLoggedIn(isLoggedIn, keepalive = false, user = cur
 
 async function logout() {
   const userToLogOut = currentUser;
+  document.getElementById('assignmentNoticeHost')?.remove();
+  deviceQueue = [];
+  assignmentNotices = [];
   unsubscribeRealtime();
   unsubscribePresence();
   stopDeviceRequestPolling();
@@ -871,10 +878,15 @@ async function loadData() {
     supabase.from('gipod_code_requests').select('*').order('requested_at', { ascending: false }),
     supabase.rpc('list_device_requests', { p_session_token: currentUser.deviceRequestToken || '' }),
     supabase.rpc('list_device_specialists'),
-    supabase.rpc('list_device_coordinators')
+    supabase.rpc('list_device_coordinators'),
+    supabase.rpc('device_queue_action', { p_session_token: currentUser.deviceRequestToken || '', p_action: 'read' })
   ]));
   if (!Array.isArray(loadResults)) throw resultError(loadResults) || new Error('Unable to reload queue.');
-  const [fileResult, codeResult, requestResult, deviceRequestResult, specialistResult, coordinatorResult] = loadResults;
+  const [fileResult, codeResult, requestResult, deviceRequestResult, specialistResult, coordinatorResult, queueResult] = loadResults;
+  if (queueResult.error) throw queueResult.error;
+  deviceQueue = queueResult.data.queue || [];
+  assignmentNotices = queueResult.data.notices || [];
+  renderAssignmentNotices();
 
   if (fileResult.error) throw fileResult.error;
   if (codeResult.error) throw codeResult.error;
@@ -1062,6 +1074,7 @@ function subscribeRealtime() {
   realtimeChannel = supabase
     .channel(`trials-dashboard-db-changes-${Date.now()}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'trial_files' }, loadData)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'coordinator_auto_queue' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'gipod_codes' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'gipod_code_requests' }, loadData)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'app_shipment_activity' }, loadData)
@@ -1082,7 +1095,7 @@ function unsubscribeRealtime() {
 function startDeviceRequestPolling() {
   stopDeviceRequestPolling();
   deviceRequestPollTimer = window.setInterval(() => {
-    if (currentUser?.deviceRequestToken && ['Admin', 'Lead', 'Device Systems Specialist'].includes(effectiveRole())) {
+    if (currentUser?.deviceRequestToken) {
       loadData();
     }
   }, 15000);
@@ -1349,8 +1362,8 @@ function workflowButtons(file) {
 
 function prepQaLog(file) {
   const items = [];
-  if (file.preppedBy) items.push(`Prepped by ${file.preppedBy}`);
-  if (file.qaBy) items.push(`QA by ${file.qaBy}`);
+  if (file.preppedBy) items.push(`Prepped by ${coordinatorName(file.preppedById, file.preppedBy)}`);
+  if (file.qaBy) items.push(`QA by ${coordinatorName(file.qaById, file.qaBy)}`);
   return items.length ? `<div class="file-log">${items.map(esc).join(' | ')}</div>` : '';
 }
 
@@ -1366,6 +1379,11 @@ function fileCard(file, name) {
     </div>
     ${prepQaLog(file)}${workflowButtons(file)}${actionButtons(file)}
   </article>`;
+}
+
+function coordinatorName(userId, fallback) {
+  const user = coordinators.find((entry) => entry.id === userId);
+  return user ? `${user.firstName} ${user.lastName}` : fallback;
 }
 
 function fileClaimClass(file) {
@@ -1386,7 +1404,7 @@ function fileLine(file, name) {
     <div class="file-line-cell"><span>Ship by</span><b>${esc(formatDate(file.expires))}</b></div>
     <div class="file-line-cell"><span>Vocabulary</span><b>${esc(file.vocab || 'none')}</b></div>
     <div class="file-line-cell wide"><span>Accessories</span><b>${accessories.length ? accessories.map(esc).join(', ') : 'none'}</b></div>
-    <div class="file-line-cell"><span>Prep / QA</span><b>${esc([file.preppedBy && `Prep ${file.preppedBy}`, file.qaBy && `QA ${file.qaBy}`].filter(Boolean).join(' | ') || 'none')}</b></div>
+    <div class="file-line-cell"><span>Prep / QA</span><b>${esc([file.preppedBy && `Prep ${coordinatorName(file.preppedById, file.preppedBy)}`, file.qaBy && `QA ${coordinatorName(file.qaById, file.qaBy)}`].filter(Boolean).join(' | ') || 'none')}</b></div>
     <div class="file-line-status"><span class="pill ${statusClass(file)}">${esc(file.status)}</span></div>
     <div class="file-line-actions">${workflow}${actionButtons(file)}</div>
   </article>`;
@@ -1404,7 +1422,45 @@ function renderLanes(target, list, names = laneNames) {
 }
 
 function renderDashboard() {
+  renderDeviceQueue();
   renderLanes('dashboardLanes', filteredFiles().filter((file) => !isPrePrep(file) && !['Complete', 'Shipped'].includes(file.status)));
+}
+
+function renderDeviceQueue() {
+  const panel = $('deviceQueuePanel');
+  if (!panel) return;
+  const queued = deviceQueue.some((entry) => entry.user_id === currentUser.id);
+  panel.innerHTML = `<div class="preprep-head"><div><h3>Device Coordinator Queue</h3><p class="muted">FIFO for trained devices. Expedites first, then oldest files. Prep and QA assignments remove you from the queue.</p></div>${currentUser.role === 'Device Coordinator' ? `<button class="btn ${queued ? 'secondary' : ''}" type="button" data-action="${queued ? 'leave-device-queue' : 'enter-device-queue'}" ${queueBusy ? 'disabled' : ''}>${queued ? 'Leave Device Queue' : 'Enter Device Que'}</button>` : ''}</div><ol>${deviceQueue.map((entry) => `<li><b>${esc(entry.name)}</b> <span class="muted">Entered ${esc(formatDateTime(entry.entered_at))}</span></li>`).join('')}</ol>${deviceQueue.length ? '' : '<p class="muted">No coordinators waiting.</p>'}`;
+}
+
+function renderAssignmentNotices() {
+  let host = $('assignmentNoticeHost');
+  if (!assignmentNotices.length) { host?.remove(); return; }
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'assignmentNoticeHost';
+    host.className = 'assignment-notice-overlay';
+    document.body.appendChild(host);
+  }
+  const notice = assignmentNotices[0];
+  host.innerHTML = `<section class="card assignment-notice" role="alertdialog" aria-modal="true" aria-labelledby="assignmentNoticeTitle"><h2 id="assignmentNoticeTitle">Device assigned to you</h2><p><b>${esc(notice.job)}: ${esc(notice.device)}</b></p><p>${esc(notice.client_name)}</p><p>You have been removed from the queue.</p><button class="btn" type="button" data-action="close-assignment-notice" data-id="${esc(notice.id)}" ${queueBusy ? 'disabled' : ''}>Close</button></section>`;
+  host.querySelector('button')?.focus();
+}
+
+async function deviceQueueAction(action, noticeId = null) {
+  if (queueBusy) return;
+  queueBusy = true;
+  renderDeviceQueue();
+  try {
+    const { data, error } = await withSupabaseRetry(() => supabase.rpc('device_queue_action', {
+      p_session_token: currentUser.deviceRequestToken || '', p_action: action, p_notice_id: noticeId
+    }));
+    if (error) return showError(error);
+    deviceQueue = data.queue || [];
+    assignmentNotices = data.notices || [];
+    renderAssignmentNotices();
+    await loadData();
+  } finally { queueBusy = false; renderDeviceQueue(); renderAssignmentNotices(); }
 }
 
 function renderShipping() {
@@ -3176,6 +3232,9 @@ document.addEventListener('click', async (event) => {
   if (action === 'delete-cleanup') await deleteCleanup(id);
   if (action === 'delete-lead-reports') await deleteLeadReports();
   if (action === 'export-daily-reports') exportDailyReports();
+  if (action === 'enter-device-queue') await deviceQueueAction('enter');
+  if (action === 'leave-device-queue') await deviceQueueAction('leave');
+  if (action === 'close-assignment-notice') await deviceQueueAction('close', id);
   if (action === 'claim-prep-notification') await claimPrepFromNotification(id);
   if (action === 'view-gipod-requests') {
     view = 'preprep';

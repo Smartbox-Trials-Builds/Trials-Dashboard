@@ -909,3 +909,8 @@ dialog .section { padding: 22px; }
   .form, .auth-form, .camera-fields, .schedule-form, .user-create, .option-grid, .layout-options { grid-template-columns: 1fr; }
   .full { grid-column: auto; }
 }
+/* Assignment notices stay centered until explicitly acknowledged. */
+.assignment-notice-overlay { position: fixed; inset: 0; z-index: 10000; background: #0008; display: grid; place-items: center; padding: 24px; }
+.assignment-notice { width: min(480px, 100%); padding: 28px; box-shadow: 0 20px 70px #0005; }
+#deviceQueuePanel { margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #8884; }
+#deviceQueuePanel li { padding: 6px 0; }

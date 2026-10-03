@@ -15,6 +15,7 @@ The app gives the team one live workspace for tracking trial files, device assig
 - User management for admins and leads, including roles and PIN resets.
 - Profile views for supported roles, including coordinator task totals and weekly schedule details.
 - Realtime updates so changes made by one user appear for the rest of the team.
+- Shared Device Coordinator Queue with enter/leave controls, FIFO assignment to trained coordinators, expedite priority, and persistent assignment notices. Available prep and QA work is assigned by file creation order; coordinators cannot QA their own prep or queue while working an active assignment.
 - Built-in update notifications for new app versions.
 
 ## Roles
@@ -26,5 +27,7 @@ The app gives the team one live workspace for tracking trial files, device assig
 - Shipper: shipping dashboard access.
 
 ## Purpose
+
+For a new database, apply `supabase/schema.sql`, then `supabase/device-queue.sql`. The queue SQL has been applied to the configured Trials-Dashboard project. Device queue support is included in desktop version 1.0.20. Assignment notifications survive reloads until the user clicks Close.
 
 The dashboard is intended to reduce manual tracking, keep trial file status visible, and give leads a reliable view of daily throughput, shipped files, user workloads, and device training coverage.
